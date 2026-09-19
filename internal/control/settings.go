@@ -54,6 +54,9 @@ type SettingsValuesResponse struct {
 	RequestLogRetentionDays   int                 `json:"request_log_retention_days"`
 	ModelsDevAutoSyncEnabled  bool                `json:"models_dev_auto_sync_enabled"`
 	ProxyConfig               outboundproxy.View  `json:"proxy_config"`
+	// TurnStateWatcher 是 Web 端保存的轮次状态 watcher 配置；null 表示未在
+	// Web 端配置（此时后端回退 TURN_STATE_* 环境变量）。
+	TurnStateWatcher *state.TurnStateWatcherConfig `json:"turn_state_watcher"`
 }
 
 type SettingsResponse struct {
@@ -213,7 +216,11 @@ func normalizeSettingUpdates(
 
 	updates := make([]persistedSettingUpdate, 0, len(keys))
 	for _, key := range keys {
-		if key != outboundproxy.SystemSettingKey && !state.IsRuntimeSettingKey(key) {
+		// turn_state_watcher 与 proxy_config 一样单独放行：它不进逐键
+		// overrides 体系，由 state.ValidateRuntimeSetting 完成整体校验。
+		if key != outboundproxy.SystemSettingKey &&
+			key != state.SettingTurnStateWatcher &&
+			!state.IsRuntimeSettingKey(key) {
 			return nil, app_errors.ErrValidation
 		}
 		raw := bytes.TrimSpace(request.Settings[key])
@@ -364,6 +371,7 @@ func mapSettingsResponse(
 			RequestLogRetentionDays:   settings.RequestLogRetentionDays,
 			ModelsDevAutoSyncEnabled:  modelsDevAutoSyncEnabled,
 			ProxyConfig:               proxyView,
+			TurnStateWatcher:          settings.TurnStateWatcher,
 		},
 		Overrides: overrides,
 		ReadOnly:  readOnly,

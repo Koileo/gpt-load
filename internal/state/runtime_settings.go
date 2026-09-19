@@ -67,6 +67,9 @@ type RuntimeSettings struct {
 	ValidationInterval        time.Duration
 	RequestLogRetentionDays   int
 	ModelsDevAutoSyncEnabled  bool
+	// TurnStateWatcher 是 Web 端保存的轮次状态 watcher 配置；nil 表示未在
+	// Web 端配置，由 TURN_STATE_* 环境变量决定 watcher 行为。
+	TurnStateWatcher *TurnStateWatcherConfig
 }
 
 type ResolvedGroupSettings struct {
@@ -228,6 +231,12 @@ func ResolveRuntimeSettings(settings config.Settings) (RuntimeSettings, error) {
 				return RuntimeSettings{}, err
 			}
 			resolved.ModelsDevAutoSyncEnabled = value
+		case SettingTurnStateWatcher:
+			parsed, err := ParseTurnStateWatcherConfig(value)
+			if err != nil {
+				return RuntimeSettings{}, err
+			}
+			resolved.TurnStateWatcher = parsed
 		default:
 			return RuntimeSettings{}, fmt.Errorf("unknown runtime setting %q", key)
 		}
@@ -352,6 +361,9 @@ func ValidateRuntimeSetting(key string, value any) error {
 		return err
 	case SettingModelsDevAutoSyncEnabled:
 		_, err := strictBoolean(key, value)
+		return err
+	case SettingTurnStateWatcher:
+		_, err := ParseTurnStateWatcherConfig(value)
 		return err
 	default:
 		return fmt.Errorf("unknown runtime setting %q", key)

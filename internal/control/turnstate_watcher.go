@@ -19,6 +19,7 @@ import (
 	"gpt-load/internal/outboundproxy"
 	"gpt-load/internal/platform/utils"
 	"gpt-load/internal/protocol"
+	"gpt-load/internal/state"
 	"gpt-load/internal/turnstate"
 )
 
@@ -341,21 +342,105 @@ type turnStateCandidate struct {
 	observedAt time.Time
 }
 
-// RunTurnStateWatcher 在控制面后台启动 turn-state watcher；未在环境中开启时
-// 立即返回，不产生任何可见行为。
+// RunTurnStateWatcher 在控制面后台启动 turn-state watcher。配置来源优先级：
+// Web 端保存的 turn_state_watcher 设置（数据库，保存后热生效）优先于
+// TURN_STATE_* 环境变量（进程启动时固定）；两者都未提供时静默待命。
 func (s *Service) RunTurnStateWatcher(ctx context.Context) {
 	if s == nil || s.db == nil || ctx == nil {
 		return
 	}
-	settings, err := loadTurnStateWatcherSettings(os.Getenv)
-	if err != nil {
-		if !errors.Is(err, errTurnStateWatcherDisabled) {
-			turnStateLog(logrus.WarnLevel, logrus.Fields{
-				"event": "control.turn_state_watcher_config_invalid",
-			}, "Turn state watcher configuration is invalid: "+err.Error())
+	envSettings, envErr := loadTurnStateWatcherSettings(os.Getenv)
+	if envErr != nil && !errors.Is(envErr, errTurnStateWatcherDisabled) {
+		turnStateLog(logrus.WarnLevel, logrus.Fields{
+			"event": "control.turn_state_watcher_config_invalid",
+		}, "Turn state watcher configuration is invalid: "+envErr.Error())
+	}
+	if s.manager == nil {
+		// 没有配置快照通道时保持旧行为：只按环境变量启动一次。
+		if envErr != nil {
+			return
 		}
+		s.runTurnStateWatcherOnce(ctx, envSettings)
 		return
 	}
+	s.superviseTurnStateWatcher(ctx, envSettings, envErr)
+}
+
+// superviseTurnStateWatcher 跟踪配置快照：Web 配置变更或清除时重启/停掉
+// watcher；环境变量配置保持启动时的值，进程重启才会生效。
+func (s *Service) superviseTurnStateWatcher(
+	ctx context.Context,
+	envSettings turnStateWatcherSettings,
+	envErr error,
+) {
+	var runningSource *state.TurnStateWatcherConfig
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		snapshot, updates := s.manager.CurrentWithUpdates()
+		settings, source := resolveTurnStateWatcherSettings(snapshot, envSettings, envErr)
+		if settings == nil || source.Equal(runningSource) {
+			select {
+			case <-ctx.Done():
+				return
+			case <-updates:
+			}
+			continue
+		}
+		innerCtx, cancel := context.WithCancel(ctx)
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			s.runTurnStateWatcherOnce(innerCtx, *settings)
+		}()
+		runningSource = source
+		select {
+		case <-ctx.Done():
+			cancel()
+			<-done
+			return
+		case <-updates:
+			cancel()
+			<-done
+		case <-done:
+			cancel()
+			// 内层自行退出属于异常场景；等下一次配置变更再尝试重启。
+			runningSource = nil
+			select {
+			case <-ctx.Done():
+				return
+			case <-updates:
+			}
+		}
+	}
+}
+
+// resolveTurnStateWatcherSettings 决定当前生效的 watcher 配置：Web 设置优先，
+// 其次环境变量。返回的 source 指针用于热重启判断（nil 表示环境变量来源）。
+func resolveTurnStateWatcherSettings(
+	snapshot *state.ConfigSnapshot,
+	envSettings turnStateWatcherSettings,
+	envErr error,
+) (*turnStateWatcherSettings, *state.TurnStateWatcherConfig) {
+	if snapshot != nil && snapshot.Settings.TurnStateWatcher != nil {
+		config := snapshot.Settings.TurnStateWatcher
+		// 快照中的配置在发布时已经 ParseTurnStateWatcherConfig 校验过，这里
+		// 的转换错误属于防御分支：记录后按未启用处理，等待下一次变更。
+		settings, err := turnStateWatcherSettingsFromConfig(*config)
+		if err != nil || !config.Enabled {
+			return nil, config
+		}
+		return &settings, config
+	}
+	if envErr != nil {
+		return nil, nil
+	}
+	return &envSettings, nil
+}
+
+// runTurnStateWatcherOnce 以给定配置运行 watcher 主循环，直到 ctx 结束。
+func (s *Service) runTurnStateWatcherOnce(ctx context.Context, settings turnStateWatcherSettings) {
 	watcher := &turnStateWatcher{
 		service:      s,
 		settings:     settings,
@@ -392,6 +477,54 @@ func (s *Service) RunTurnStateWatcher(ctx context.Context) {
 			watcher.sweep(ctx)
 		}
 	}
+}
+
+// turnStateWatcherSettingsFromConfig 把 Web 端保存的配置转换成 watcher 运行
+// 设置；字段缺省已在 ParseTurnStateWatcherConfig 里填充。
+func turnStateWatcherSettingsFromConfig(
+	config state.TurnStateWatcherConfig,
+) (turnStateWatcherSettings, error) {
+	settings := turnStateWatcherSettings{
+		Enabled:      config.Enabled,
+		GroupID:      config.GroupID,
+		CredentialID: config.CredentialID,
+		PushModels:   config.PushModels,
+		PushMaxAge:   time.Duration(config.PushMaxAgeMS) * time.Millisecond,
+		PollInterval: time.Duration(config.PollIntervalSeconds) * time.Second,
+		VerifyGap:    time.Duration(config.VerifyIntervalSeconds) * time.Second,
+		VerifyTime:   time.Duration(config.VerifyTimeoutSeconds) * time.Second,
+		VerifyMax:    config.VerifyMaxAttempts,
+		Verbose:      config.Verbose,
+		DirectProxy:  outboundproxy.Config{Mode: outboundproxy.ModeDirect},
+	}
+	if !config.Enabled || config.PushModels == "" {
+		return settings, fmt.Errorf("turn state watcher config is not enabled")
+	}
+	settings.WatchModels = map[string]struct{}{strings.ToLower(config.PushModels): {}}
+	settings.HealthyLength = make(map[int]struct{}, len(config.HealthyLengths))
+	for _, length := range config.HealthyLengths {
+		settings.HealthyLength[length] = struct{}{}
+	}
+	settings.DegradedLength = make(map[int]struct{}, len(config.DegradedLengths))
+	for _, length := range config.DegradedLengths {
+		settings.DegradedLength[length] = struct{}{}
+	}
+	settings.VerifyModel = strings.ToLower(config.PushModels)
+	if config.DegradeProxyURL != "" {
+		mode := outboundproxy.Mode(config.DegradeProxyMode)
+		if mode == "" {
+			mode = outboundproxy.ModeCustom
+		}
+		proxy, err := outboundproxy.Normalize(outboundproxy.Config{Mode: mode, URL: config.DegradeProxyURL})
+		if err != nil || proxy.Mode != outboundproxy.ModeCustom {
+			return settings, fmt.Errorf("turn state watcher degrade proxy is invalid")
+		}
+		settings.DegradeProxy = proxy
+		settings.DegradeReady = true
+	} else {
+		settings.DegradeProxy = outboundproxy.Config{Mode: outboundproxy.ModeCustom}
+	}
+	return settings, nil
 }
 
 // restoreState 在启动时判断凭据是否还停在降级配置上，是则继续验证流程，

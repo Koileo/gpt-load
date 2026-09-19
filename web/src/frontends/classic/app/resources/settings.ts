@@ -7,6 +7,7 @@ import {
   type ProxyMutation,
   type ProxyViewDto,
   type RouteStrategy,
+  type TurnStateWatcherConfigDto,
 } from '@/api/control/types'
 import { InvalidResponseError } from '@shared/http/errors'
 import { controlQueryKeys } from '@/app/query-keys'
@@ -87,6 +88,7 @@ export interface SettingsValues {
   request_log_retention_days: number
   models_dev_auto_sync_enabled: boolean
   proxy_config: ProxyViewDto
+  turn_state_watcher: TurnStateWatcherConfigDto | null
 }
 
 export interface SettingsDto {
@@ -113,6 +115,7 @@ export type SettingsPatch = Partial<{
   request_log_retention_days: number | null
   models_dev_auto_sync_enabled: boolean | null
   proxy_config: ProxyMutation
+  turn_state_watcher: TurnStateWatcherConfigDto | null
 }>
 
 export interface SettingsResource {
@@ -120,7 +123,50 @@ export interface SettingsResource {
 }
 
 const settingsFields = ['values', 'overrides', 'read_only'] as const
-const settingsValueFields = [...runtimeSettingKeys, 'proxy_config'] as const
+const settingsValueFields = [...runtimeSettingKeys, 'proxy_config', 'turn_state_watcher'] as const
+
+const turnStateWatcherFields = [
+  'enabled',
+  'group_id',
+  'credential_id',
+  'push_models',
+  'push_max_age_ms',
+  'healthy_lengths',
+  'degraded_lengths',
+  'poll_interval_seconds',
+  'degrade_proxy_mode',
+  'degrade_proxy_url',
+  'verify_interval_seconds',
+  'verify_timeout_seconds',
+  'verify_max_attempts',
+  'verbose',
+] as const
+
+function projectTurnStateWatcher(value: unknown): TurnStateWatcherConfigDto | null {
+  if (value === null) return null
+  const record = projectRecord(value)
+  assertNoSecretLikeFields(record, [...turnStateWatcherFields])
+  return {
+    enabled: projectBoolean(record.enabled),
+    group_id: projectSafeInteger(record.group_id, { minimum: 1 }),
+    credential_id: projectSafeInteger(record.credential_id, { minimum: 1 }),
+    push_models: projectString(record.push_models, { allowEmpty: true }),
+    push_max_age_ms: projectSafeInteger(record.push_max_age_ms, { minimum: 1 }),
+    healthy_lengths: projectArray(record.healthy_lengths, (length) =>
+      projectSafeInteger(length, { minimum: 1 }),
+    ),
+    degraded_lengths: projectArray(record.degraded_lengths, (length) =>
+      projectSafeInteger(length, { minimum: 1 }),
+    ),
+    poll_interval_seconds: projectSafeInteger(record.poll_interval_seconds, { minimum: 1 }),
+    degrade_proxy_mode: projectString(record.degrade_proxy_mode, { allowEmpty: true }),
+    degrade_proxy_url: projectString(record.degrade_proxy_url, { allowEmpty: true }),
+    verify_interval_seconds: projectSafeInteger(record.verify_interval_seconds, { minimum: 1 }),
+    verify_timeout_seconds: projectSafeInteger(record.verify_timeout_seconds, { minimum: 1 }),
+    verify_max_attempts: projectSafeInteger(record.verify_max_attempts, { minimum: 0 }),
+    verbose: projectBoolean(record.verbose),
+  }
+}
 
 function invalidResponse(): never {
   throw new InvalidResponseError()
@@ -219,6 +265,7 @@ export function projectSettings(value: unknown): SettingsDto {
       }),
       models_dev_auto_sync_enabled: projectBoolean(values.models_dev_auto_sync_enabled),
       proxy_config: projectProxyView(values.proxy_config),
+      turn_state_watcher: projectTurnStateWatcher(values.turn_state_watcher),
     },
     overrides,
     read_only: readOnly,

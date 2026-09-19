@@ -5,13 +5,18 @@ import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 
 import { useApiClient } from '@shared/http/client-context'
-import type { ProxyConfiguredMode, ProxyViewDto } from '@/api/control/types'
+import type {
+  ProxyConfiguredMode,
+  ProxyViewDto,
+  TurnStateWatcherConfigDto,
+} from '@/api/control/types'
 import { useStableLoading } from '@/app/loading-state'
 import { proxyDraftState } from '@/app/resources/proxy'
 import {
   runtimeSettingKeys,
   settingsQueryOptions,
   type RuntimeSettingKey,
+  type SettingsPatch,
 } from '@/app/resources/settings'
 import { controlQueryKeys } from '@/app/query-keys'
 import { settingsLocation } from '@/app/route-locations'
@@ -37,6 +42,7 @@ import FrontendSettingsSection from './FrontendSettingsSection.vue'
 import ReliabilitySettingsSection from './ReliabilitySettingsSection.vue'
 import RoutingSettingsSection from './RoutingSettingsSection.vue'
 import SystemInfoSection from './SystemInfoSection.vue'
+import TurnStateWatcherSection from './TurnStateWatcherSection.vue'
 import {
   isValidAffinityCapacity,
   isValidNonNegativeInteger,
@@ -76,13 +82,21 @@ const {
 const proxyMode = ref<ProxyConfiguredMode>('inherit')
 const proxyEndpoint = ref('')
 const proxyBaseView = ref<ProxyViewDto>()
+const turnStateDraft = ref<TurnStateWatcherConfigDto | null>(null)
+const turnStateTouched = ref(false)
+const turnStateValid = ref(true)
+const turnStateResetKey = ref(0)
 const proxyState = computed(() =>
   proxyBaseView.value
     ? proxyDraftState(proxyBaseView.value, proxyMode.value, proxyEndpoint.value)
     : { dirty: false, invalid: false, value: undefined },
 )
 const hasLocalEdits = computed(
-  () => headerRulesInvalidEdits.value || responseRulesInvalidEdits.value || proxyState.value.dirty,
+  () =>
+    headerRulesInvalidEdits.value ||
+    responseRulesInvalidEdits.value ||
+    proxyState.value.dirty ||
+    turnStateDirty.value,
 )
 const {
   base,
@@ -104,6 +118,30 @@ function resetProxyDraft(view: ProxyViewDto): void {
   proxyEndpoint.value = ''
 }
 
+const turnStateBase = computed(() => base.value?.settings.values.turn_state_watcher ?? null)
+const turnStateDirty = computed(
+  () =>
+    turnStateTouched.value &&
+    JSON.stringify(turnStateDraft.value) !== JSON.stringify(turnStateBase.value),
+)
+function cloneTurnStateConfig(config: TurnStateWatcherConfigDto): TurnStateWatcherConfigDto {
+  return {
+    ...config,
+    healthy_lengths: [...config.healthy_lengths],
+    degraded_lengths: [...config.degraded_lengths],
+  }
+}
+function resetTurnStateDraft(): void {
+  turnStateDraft.value = turnStateBase.value ? cloneTurnStateConfig(turnStateBase.value) : null
+  turnStateTouched.value = false
+  turnStateResetKey.value += 1
+}
+watch(turnStateBase, resetTurnStateDraft, { immediate: true })
+function onTurnStateChange(value: TurnStateWatcherConfigDto | null): void {
+  turnStateDraft.value = value
+  turnStateTouched.value = true
+}
+
 watch(
   () => base.value?.settings.values.proxy_config,
   (view) => {
@@ -119,6 +157,7 @@ const navItems = computed(() => [
   { id: 'settings-connection', label: t('settings.navigation.connection') },
   { id: 'settings-reliability', label: t('settings.navigation.reliability') },
   { id: 'settings-browser-access', label: t('settings.navigation.browserAccess') },
+  { id: 'settings-turn-state', label: t('settings.turnState.title') },
   { id: 'settings-data-maintenance', label: t('settings.navigation.dataMaintenance') },
   { id: 'settings-system', label: t('settings.navigation.system') },
   { id: 'settings-interface', label: t('settings.frontend.title') },
@@ -139,10 +178,15 @@ const dirty = computed(
     controllerDirty.value ||
     headerRulesInvalidEdits.value ||
     responseRulesInvalidEdits.value ||
-    proxyState.value.dirty,
+    proxyState.value.dirty ||
+    turnStateDirty.value,
 )
 const valid = computed(
-  () => controllerValid.value && browserAccessValid.value && !proxyState.value.invalid,
+  () =>
+    controllerValid.value &&
+    browserAccessValid.value &&
+    turnStateValid.value &&
+    !proxyState.value.invalid,
 )
 const timeoutKeys = [
   'first_byte_timeout',
@@ -164,6 +208,7 @@ const changedKeys = computed(() => {
 const changedLabels = computed(() => [
   ...changedKeys.value.map(settingLabel),
   ...(proxyState.value.dirty ? [t('common.proxy.title')] : []),
+  ...(turnStateDirty.value ? [t('settings.turnState.title')] : []),
 ])
 const invalidKeys = computed<RuntimeSettingKey[]>(() => {
   const current = draft.value
@@ -257,6 +302,7 @@ function sectionFromID(id: string): SettingsSection | undefined {
     section === 'connection' ||
     section === 'reliability' ||
     section === 'browser-access' ||
+    section === 'turn-state' ||
     section === 'data-maintenance' ||
     section === 'system' ||
     section === 'interface'
@@ -278,6 +324,7 @@ function discard(): void {
   responseRulesInvalidEdits.value = false
   browserAccessEditorRevision.value += 1
   if (proxyBaseView.value) resetProxyDraft(proxyBaseView.value)
+  resetTurnStateDraft()
 }
 
 function requestDiscard(): void {
@@ -344,10 +391,13 @@ async function focusTarget(key: RuntimeSettingKey): Promise<void> {
 }
 
 async function handleSaveAll(): Promise<void> {
-  const extra =
-    proxyState.value.dirty && proxyState.value.value !== undefined
-      ? { proxy_config: proxyState.value.value }
-      : {}
+  const extra: SettingsPatch = {}
+  if (proxyState.value.dirty && proxyState.value.value !== undefined) {
+    extra.proxy_config = proxyState.value.value
+  }
+  if (turnStateDirty.value) {
+    extra.turn_state_watcher = turnStateDraft.value
+  }
   await saveAll(extra)
 }
 
@@ -452,6 +502,14 @@ onBeforeUnmount(() => {
               :draft="draft"
               :disabled="pageOperationLocked"
               @change="updateDraft"
+            />
+            <TurnStateWatcherSection
+              :config="base.settings.values.turn_state_watcher"
+              :draft="turnStateDraft"
+              :disabled="pageOperationLocked"
+              :reset-key="turnStateResetKey"
+              @change="onTurnStateChange"
+              @update:valid="turnStateValid = $event"
             />
           </template>
 

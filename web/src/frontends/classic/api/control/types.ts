@@ -36,6 +36,26 @@ export interface ProxyViewDto {
 export type ProxyConfigInput = { mode: 'direct' } | { mode: 'custom'; url: string }
 export type ProxyMutation = ProxyConfigInput | null
 
+// 与后端 state.TurnStateWatcherConfig 对应；null 表示未在 Web 端配置，
+// 后端回退 TURN_STATE_* 环境变量。
+export interface TurnStateWatcherConfigDto {
+  enabled: boolean
+  group_id: number
+  credential_id: number
+  push_models: string
+  push_max_age_ms: number
+  healthy_lengths: number[]
+  degraded_lengths: number[]
+  poll_interval_seconds: number
+  degrade_proxy_mode: string
+  degrade_proxy_url: string
+  verify_interval_seconds: number
+  verify_timeout_seconds: number
+  verify_max_attempts: number
+  verbose: boolean
+}
+export type TurnStateWatcherMutation = TurnStateWatcherConfigDto | null
+
 export interface GroupCollectionFilters {
   q?: string
   status?: GroupCollectionStatus

@@ -7,6 +7,7 @@ export type SettingsSection =
   | 'connection'
   | 'reliability'
   | 'browser-access'
+  | 'turn-state'
   | 'data-maintenance'
   | 'system'
   | 'interface'
@@ -16,6 +17,7 @@ const sections = new Set<SettingsSection>([
   'connection',
   'reliability',
   'browser-access',
+  'turn-state',
   'data-maintenance',
   'system',
   'interface',
