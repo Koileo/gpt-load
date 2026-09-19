@@ -86,10 +86,16 @@ const turnStateDraft = ref<TurnStateWatcherConfigDto | null>(null)
 const turnStateTouched = ref(false)
 const turnStateValid = ref(true)
 const turnStateResetKey = ref(0)
+const turnStateBase = ref<TurnStateWatcherConfigDto | null>(null)
 const proxyState = computed(() =>
   proxyBaseView.value
     ? proxyDraftState(proxyBaseView.value, proxyMode.value, proxyEndpoint.value)
     : { dirty: false, invalid: false, value: undefined },
+)
+const turnStateDirty = computed(
+  () =>
+    turnStateTouched.value &&
+    JSON.stringify(turnStateDraft.value) !== JSON.stringify(turnStateBase.value),
 )
 const hasLocalEdits = computed(
   () =>
@@ -118,12 +124,6 @@ function resetProxyDraft(view: ProxyViewDto): void {
   proxyEndpoint.value = ''
 }
 
-const turnStateBase = computed(() => base.value?.settings.values.turn_state_watcher ?? null)
-const turnStateDirty = computed(
-  () =>
-    turnStateTouched.value &&
-    JSON.stringify(turnStateDraft.value) !== JSON.stringify(turnStateBase.value),
-)
 function cloneTurnStateConfig(config: TurnStateWatcherConfigDto): TurnStateWatcherConfigDto {
   return {
     ...config,
@@ -136,7 +136,14 @@ function resetTurnStateDraft(): void {
   turnStateTouched.value = false
   turnStateResetKey.value += 1
 }
-watch(turnStateBase, resetTurnStateDraft, { immediate: true })
+watch(
+  () => base.value?.settings.values.turn_state_watcher ?? null,
+  (config) => {
+    turnStateBase.value = config
+    resetTurnStateDraft()
+  },
+  { immediate: true },
+)
 function onTurnStateChange(value: TurnStateWatcherConfigDto | null): void {
   turnStateDraft.value = value
   turnStateTouched.value = true
