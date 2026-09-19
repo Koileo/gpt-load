@@ -56,7 +56,7 @@ jobs:
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           # GHCR 仓库名必须全小写，这里写死小写而不是从 github.repository 推导。
-          images: ghcr.io/desuwadev/gpt-load
+          images: ghcr.io/koileo/gpt-load-private
           # 默认分支之外手动触发时只推 sha 标签，避免把 latest 指向试验分支。
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}

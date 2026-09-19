@@ -11,7 +11,7 @@ API keys, subscription accounts, traffic scheduling, failure handling, request l
 English · [中文](README_CN.md) · [日本語](README_JP.md) | [Official Website](https://www.gpt-load.com)
 
 [![Last commit](https://img.shields.io/github/last-commit/DesuwaDev/gpt-load/main)](https://github.com/DesuwaDev/gpt-load/commits/main)
-[![Docker](https://img.shields.io/badge/Docker-ghcr.io%2Fdesuwadev%2Fgpt--load%3Alatest-2496ED?logo=docker&logoColor=white)](https://github.com/DesuwaDev/gpt-load/pkgs/container/gpt-load)
+[![Docker](https://img.shields.io/badge/Docker-ghcr.io%2Fkoileo%2Fgpt--load--private%3Alatest-2496ED?logo=docker&logoColor=white)](https://github.com/Koileo/gpt-load-private/pkgs/container/gpt-load-private)
 [![Go](https://img.shields.io/badge/Go-1.27-00ADD8?logo=go&logoColor=white)](go.mod)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
@@ -181,7 +181,7 @@ docker compose pull && docker compose up -d   # update to the latest 2.x image
 docker compose stop         # stop the service
 ```
 
-This Compose file uses `ghcr.io/desuwadev/gpt-load:latest`. Images are built by [`docker-image.yml`](.github/workflows/docker-image.yml) on every push to `main`: `latest` and `2` both point at the newest `main` commit, and every build also publishes a `sha-<short-sha>` tag to pin against. Images are multi-platform (`linux/amd64`, `linux/arm64`). Upstream keeps its `latest` on 1.x; this fork does not follow that convention.
+This Compose file uses the public image `ghcr.io/koileo/gpt-load-private:latest`; pulling it does not require registry authentication. Images are built by [`docker-image.yml`](.github/workflows/docker-image.yml) on every push to `main`: `latest` and `2` both point at the newest `main` commit, and every build also publishes a `sha-<short-sha>` tag to pin against. Images are multi-platform (`linux/amd64`, `linux/arm64`). Upstream keeps its `latest` on 1.x; this fork does not follow that convention.
 
 <details>
 <summary>Using a native binary</summary>
