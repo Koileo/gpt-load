@@ -524,6 +524,61 @@ func TestHandlerRecordsModelConsistencyOnlyForSuccessfulModeledRequests(t *testi
 	}
 }
 
+func TestHandlerRecordsStreamResponseModelMismatchFromUpstreamPayload(t *testing.T) {
+	t.Parallel()
+
+	const chunk = "data: {\"id\":\"chatcmpl-1\",\"model\":\"gpt-4o-mini\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello\"},\"finish_reason\":\"stop\"}]}\n\n"
+	const done = "data: [DONE]\n\n"
+	executor := fakeExecutionExecutor{stream: func(
+		_ context.Context,
+		_ execution.AttemptSpec,
+		sink execution.StreamSink,
+	) execution.StreamResult {
+		for _, event := range []execution.StreamEvent{
+			{
+				Sequence: 1, Kind: execution.StreamEventReady, StatusCode: http.StatusOK,
+				Header: http.Header{"Content-Type": {"text/event-stream"}},
+			},
+			{Sequence: 2, Kind: execution.StreamEventData, Data: []byte(chunk)},
+			{Sequence: 3, Kind: execution.StreamEventData, Data: []byte(done)},
+		} {
+			if err := sink(event); err != nil {
+				t.Fatalf("stream sink: %v", err)
+			}
+		}
+		return execution.StreamResult{
+			DispatchState: execution.DispatchMaybeSent, ResponseStarted: true,
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": {"text/event-stream"}},
+			// Simulate adapters that only return the requested model as terminal metadata.
+			Model: "gpt-4o",
+		}
+	}}
+	sink := &recordingRequestLogSink{}
+	engine, _, _, _ := newRequestLogHandlerTestRuntime(
+		t, NewExecutionForwarder(executor), &recordingAccessKeyRPMLimiter{}, sink, "sk-first",
+	)
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/v1/chat/completions",
+		strings.NewReader(`{"model":"gpt-4o","stream":true}`),
+	)
+	request.Header.Set("Authorization", "Bearer gl-client")
+	response := httptest.NewRecorder()
+	engine.ServeHTTP(response, request)
+
+	events := sink.snapshot()
+	if response.Code != http.StatusOK || response.Body.String() != chunk+done || len(events) != 1 {
+		t.Fatalf("response/events = %d %q / %#v", response.Code, response.Body.String(), events)
+	}
+	event := events[0]
+	if !event.Stream || event.Status != telemetry.RequestStatusSuccess ||
+		event.UpstreamModel != "gpt-4o" || event.UpstreamReportedModel != "gpt-4o-mini" ||
+		event.ModelConsistency != telemetry.ModelConsistencyMismatch {
+		t.Fatalf("stream model consistency event = %#v", event)
+	}
+}
+
 func TestHandlerBillableResponsesUsageWithoutPriceIsUnpriced(t *testing.T) {
 	forwarder := &scriptedForwarder{results: []UpstreamResult{{
 		StatusCode: http.StatusOK,

@@ -128,6 +128,7 @@ func (forwarder *ExecutionForwarder) ForwardStream(
 		input.Dialect,
 		usageCapture.newStreamForRequest(input.Dialect, input.ObserveUsage),
 	)
+	modelTracker := newResponseModelTracker(input.Dialect, input.UpstreamModelID)
 	redactor := redact.New()
 	if forwarder.representation != nil && forwarder.representation.redactor != nil {
 		redactor = forwarder.representation.redactor
@@ -153,6 +154,9 @@ func (forwarder *ExecutionForwarder) ForwardStream(
 		providerError, err := streamEvents.classify(event, genericProviderError)
 		if err != nil {
 			return false, err
+		}
+		if !wasTerminal {
+			modelTracker.observe(event.Payload)
 		}
 		if !wasTerminal && !providerError && input.OnResponse != nil {
 			object, err := decodeResponsesStoreObject(event.Payload)
@@ -329,6 +333,7 @@ func (forwarder *ExecutionForwarder) ForwardStream(
 	}
 	capturedUsage := streamEvents.finalizeUsage()
 	result := upstreamFromExecutionStreamResult(ctx, input, terminal, streamUsage)
+	applyResponseModelObservation(&result, modelTracker.observation())
 	if input.ObserveUsage && input.ClientProtocol == protocol.Anthropic &&
 		input.RouteMode == execution.RouteNative && capturedUsage.State != usage.StateMissing {
 		// 原生 Anthropic 流以实际事件为用量依据。SDK 的最大值合并会丢失
@@ -617,6 +622,7 @@ func (forwarder *ExecutionForwarder) prepareBufferedResult(
 		result.Header = prepared.headers
 		result.Body = prepared.downstream
 		result.ClassificationBody = prepared.inspectable
+		applyResponseModelObservation(&result, prepared.modelObservation)
 		return result
 	}
 	if result.ExecutionError != nil &&

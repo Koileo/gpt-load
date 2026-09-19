@@ -114,7 +114,7 @@ func TestExecutionForwarderBuildsFrozenAttemptAndMapsUnaryResult(t *testing.T) {
 			ResponseStarted:   true,
 			StatusCode:        http.StatusOK,
 			Header:            http.Header{"X-Request-Id": {"upstream-1"}},
-			Body:              []byte(`{"ok":true}`),
+			Body:              []byte(`{"ok":true,"model":"upstream"}`),
 			Model:             "upstream",
 			UpstreamRequestID: "upstream-1",
 			Usage:             &execution.UsageEvidence{Normalized: wantUsage},
@@ -123,10 +123,99 @@ func TestExecutionForwarderBuildsFrozenAttemptAndMapsUnaryResult(t *testing.T) {
 
 	result := NewExecutionForwarder(executor).Forward(context.Background(), executionForwardInput())
 	if result.Err != nil || result.StatusCode != http.StatusOK ||
-		string(result.Body) != `{"ok":true}` || !reflect.DeepEqual(result.Usage, wantUsage) ||
+		string(result.Body) != `{"model":"public","ok":true}` || !reflect.DeepEqual(result.Usage, wantUsage) ||
 		result.DispatchState != execution.DispatchMaybeSent || !result.ResponseStarted ||
-		result.UpstreamRequestID != "upstream-1" || result.UpstreamReportedModel != "upstream" {
+		result.UpstreamRequestID != "upstream-1" || result.UpstreamReportedModel != "upstream" ||
+		!result.ResponseModelObserved || result.ResponseModelMismatch {
 		t.Fatalf("Forward() = %#v", result)
+	}
+}
+
+func TestExecutionForwarderUsesPayloadModelObservationForSuccessfulUnary(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		body         string
+		wantReported string
+		wantObserved bool
+		wantMismatch bool
+	}{
+		{
+			name: "mismatch", body: `{"model":"replacement"}`,
+			wantReported: "replacement", wantObserved: true, wantMismatch: true,
+		},
+		{name: "not reported", body: `{"ok":true}`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			executor := fakeExecutionExecutor{unary: func(
+				context.Context,
+				execution.AttemptSpec,
+			) execution.AttemptResult {
+				return execution.AttemptResult{
+					DispatchState: execution.DispatchMaybeSent, ResponseStarted: true,
+					StatusCode: http.StatusOK,
+					Header:     http.Header{"Content-Type": {"application/json"}},
+					Body:       []byte(test.body),
+					// Execution adapters may populate this from the requested model.
+					// Payload observation must be authoritative for successful responses.
+					Model: "upstream",
+				}
+			}}
+
+			result := NewExecutionForwarder(executor).Forward(
+				context.Background(), executionForwardInput(),
+			)
+			if result.Err != nil || result.UpstreamReportedModel != test.wantReported ||
+				result.ResponseModelObserved != test.wantObserved ||
+				result.ResponseModelMismatch != test.wantMismatch {
+				t.Fatalf("Forward() = %#v", result)
+			}
+		})
+	}
+}
+
+func TestExecutionForwarderObservesResponseModelInStream(t *testing.T) {
+	t.Parallel()
+
+	const completed = "event: response.completed\n" +
+		"data: {\"type\":\"response.completed\",\"response\":{\"model\":\"replacement\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n"
+	const trailing = "event: response.created\n" +
+		"data: {\"type\":\"response.created\",\"response\":{\"model\":\"late-model\"}}\n\n"
+	executor := fakeExecutionExecutor{stream: func(
+		_ context.Context,
+		_ execution.AttemptSpec,
+		sink execution.StreamSink,
+	) execution.StreamResult {
+		for _, event := range []execution.StreamEvent{
+			{
+				Sequence: 1, Kind: execution.StreamEventReady, StatusCode: http.StatusOK,
+				Header: http.Header{"Content-Type": {"text/event-stream"}},
+			},
+			{Sequence: 2, Kind: execution.StreamEventData, Data: []byte(completed[:61])},
+			{Sequence: 3, Kind: execution.StreamEventData, Data: []byte(completed[61:] + trailing)},
+		} {
+			if err := sink(event); err != nil {
+				t.Fatalf("stream sink: %v", err)
+			}
+		}
+		return execution.StreamResult{
+			DispatchState: execution.DispatchMaybeSent, ResponseStarted: true,
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": {"text/event-stream"}},
+			Model:      "upstream",
+		}
+	}}
+
+	result := NewExecutionForwarder(executor).ForwardStream(
+		context.Background(), responsesExecutionForwardInput(), httptest.NewRecorder(),
+	)
+	if result.Err != nil || !result.Committed || result.Stream.EndReason != StreamEndCleanEOF ||
+		result.UpstreamReportedModel != "replacement" || !result.ResponseModelObserved ||
+		!result.ResponseModelMismatch {
+		t.Fatalf("ForwardStream() = %#v", result)
 	}
 }
 
