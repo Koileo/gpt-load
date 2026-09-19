@@ -40,6 +40,7 @@ import (
 	providerobservation "gpt-load/internal/subscription/providers/observation"
 	subscriptionruntime "gpt-load/internal/subscription/runtime"
 	"gpt-load/internal/testutil/encryptiontest"
+	"gpt-load/internal/turnstate"
 )
 
 type fakeExecutor struct {
@@ -170,6 +171,38 @@ func TestAdapterExecuteRecordsPassiveQuotaObservationOnSuccessAndHTTPError(t *te
 				t.Fatalf("dirty observations = %#v", dirty)
 			}
 		})
+	}
+}
+
+func TestObserveTurnStatePublishesOnlySuccessfulAttempts(t *testing.T) {
+	seen := make(chan turnstate.Observation, 3)
+	restore := turnstate.Subscribe(func(observation turnstate.Observation) {
+		seen <- observation
+	})
+	defer restore()
+	spec := execution.NewAttemptSpec(execution.AttemptSpec{
+		Credential:  execution.NewCredentialSnapshot(17, 1, 1, []byte("credential")),
+		ClientModel: "client-model", UpstreamModel: "upstream-model",
+	})
+
+	observeTurnState(spec, http.StatusContinue, "ignored")
+	observeTurnState(spec, http.StatusOK, "first")
+	observeTurnState(spec, http.StatusMultipleChoices-1, "second")
+	observeTurnState(spec, http.StatusMultipleChoices, "ignored")
+	observeTurnState(spec, http.StatusOK, "")
+
+	for _, want := range []string{"first", "second"} {
+		observation := <-seen
+		if observation.CredentialID != 17 || observation.ClientModel != "client-model" ||
+			observation.UpstreamModel != "upstream-model" || observation.TurnState != want ||
+			observation.ObservedAt.IsZero() {
+			t.Fatalf("observation = %+v, want value %q with attempt metadata", observation, want)
+		}
+	}
+	select {
+	case observation := <-seen:
+		t.Fatalf("unexpected observation = %+v", observation)
+	default:
 	}
 }
 

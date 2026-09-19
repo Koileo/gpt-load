@@ -236,6 +236,12 @@ Windows 普通用户可改为下载 `gpt-load-windows-setup.exe`。双击并确�
 
 环境代理仅在凭据、Group 和全局设置都未指定代理时生效。
 
+### 可选：Codex 轮次状态自动协商
+
+设置 `TURN_STATE_WATCHER=true` 可开启进程内 watcher。每个 watcher 严格绑定一个 Codex 订阅凭据和一个具体模型，只消费该“账号 + 模型”组合的 2xx 上游响应，也只把新鲜健康状态注入同一组合；命中已知异常形态时，用一次原子更新清空旧状态并切到备用代理，再用固定到该凭据和模型的最小 Responses 请求验证；恢复后用一次原子更新写入新状态并切回直连。未知长度只记录，不会自动改代理。
+
+至少需要设置 `TURN_STATE_PUSH_MODELS`，且只能填写一个不含逗号或通配符的模型；完整配置见 [`.env.example`](./.env.example)。绑定凭据由 `TURN_STATE_PUSH_GROUP_ID` / `TURN_STATE_PUSH_CREDENTIAL_ID` 指定。为兼容旧配置，仍可读取 `TURN_STATE_CREDENTIAL_ID`、`TURN_STATE_MODELS` 和 `TURN_STATE_VERIFY_MODEL`，但它们必须分别与绑定凭据和模型完全一致，否则 watcher 拒绝启动。个人号默认使用健康/异常长度 `292/312`，Team 号使用 `332/356`，可分别通过 `TURN_STATE_HEALTHY_LENGTHS` 和 `TURN_STATE_DEGRADED_LENGTHS` 调整。配置 `TURN_STATE_DEGRADE_PROXY_URL` 后才会启用自动换代理；旧脚本的 `TURN_STATE_312_PROXY_MODE` / `TURN_STATE_312_PROXY_URL` 仍兼容。不要把带认证信息的代理 URL 提交到仓库。
+
 </details>
 
 ## 生产使用注意事项

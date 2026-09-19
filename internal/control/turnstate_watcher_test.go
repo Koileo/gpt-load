@@ -2,6 +2,8 @@ package control
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -43,8 +45,14 @@ func TestLoadTurnStateWatcherSettingsDefaultsAndFallbacks(t *testing.T) {
 	if settings.GroupID != defaultTurnStateGroupID || settings.CredentialID != defaultTurnStateCredentialID {
 		t.Fatalf("unexpected ids: group %d credential %d", settings.GroupID, settings.CredentialID)
 	}
-	if _, ok := settings.HealthyLength[292]; !ok {
-		t.Fatalf("default healthy length should include 292, got %v", settings.HealthyLength)
+	if _, ok := settings.HealthyLength[292]; !ok || len(settings.HealthyLength) != 2 {
+		t.Fatalf("default healthy lengths should include individual and team shapes, got %v", settings.HealthyLength)
+	}
+	if _, ok := settings.HealthyLength[332]; !ok {
+		t.Fatalf("default healthy lengths should include team shape, got %v", settings.HealthyLength)
+	}
+	if _, ok := settings.DegradedLength[312]; !ok || len(settings.DegradedLength) != 2 {
+		t.Fatalf("default degraded lengths should include individual and team shapes, got %v", settings.DegradedLength)
 	}
 	if settings.DegradeReady {
 		t.Fatal("degrade path must be disabled without TURN_STATE_312_PROXY_URL")
@@ -70,15 +78,18 @@ func TestLoadTurnStateWatcherSettingsFullConfiguration(t *testing.T) {
 	t.Parallel()
 	settings, err := loadTurnStateWatcherSettings(getenvWith(map[string]string{
 		"TURN_STATE_WATCHER":             "1",
-		"TURN_STATE_MODELS":              "model-a, model-b",
+		"TURN_STATE_MODELS":              "model-a",
+		"TURN_STATE_PUSH_MODELS":         "model-a",
 		"TURN_STATE_PUSH_GROUP_ID":       "3",
 		"TURN_STATE_PUSH_CREDENTIAL_ID":  "4",
+		"TURN_STATE_CREDENTIAL_ID":       "4",
 		"TURN_STATE_PUSH_MAX_AGE_MS":     "60000",
 		"TURN_STATE_HEALTHY_LENGTHS":     "292,332",
+		"TURN_STATE_DEGRADED_LENGTHS":    "312,356",
 		"TURN_STATE_POLL_INTERVAL":       "5",
 		"TURN_STATE_312_PROXY_MODE":      "custom",
 		"TURN_STATE_312_PROXY_URL":       "socks5://127.0.0.1:3010",
-		"TURN_STATE_VERIFY_MODEL":        "model-b",
+		"TURN_STATE_VERIFY_MODEL":        "model-a",
 		"TURN_STATE_VERIFY_INTERVAL":     "30",
 		"TURN_STATE_VERIFY_MAX_ATTEMPTS": "3",
 	}))
@@ -100,8 +111,91 @@ func TestLoadTurnStateWatcherSettingsFullConfiguration(t *testing.T) {
 	if !settings.DegradeReady || settings.DegradeProxy.URL != "socks5://127.0.0.1:3010" {
 		t.Fatalf("degrade proxy = %+v", settings.DegradeProxy)
 	}
-	if settings.VerifyMax != 3 || settings.VerifyModel != "model-b" {
+	if settings.VerifyMax != 3 || settings.VerifyModel != "model-a" {
 		t.Fatalf("verify config = max %d model %q", settings.VerifyMax, settings.VerifyModel)
+	}
+}
+
+func TestLoadTurnStateWatcherSettingsRejectsCrossBinding(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		values map[string]string
+	}{
+		{
+			name: "source credential differs from target",
+			values: map[string]string{
+				"TURN_STATE_PUSH_CREDENTIAL_ID": "4",
+				"TURN_STATE_CREDENTIAL_ID":      "5",
+			},
+		},
+		{
+			name: "multiple injection models",
+			values: map[string]string{
+				"TURN_STATE_PUSH_MODELS": "model-a,model-b",
+			},
+		},
+		{
+			name: "wildcard injection model",
+			values: map[string]string{
+				"TURN_STATE_PUSH_MODELS": "model-*",
+			},
+		},
+		{
+			name: "observation model differs from injection model",
+			values: map[string]string{
+				"TURN_STATE_MODELS": "model-b",
+			},
+		},
+		{
+			name: "verification model differs from injection model",
+			values: map[string]string{
+				"TURN_STATE_VERIFY_MODEL": "model-b",
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			values := map[string]string{
+				"TURN_STATE_WATCHER":     "1",
+				"TURN_STATE_PUSH_MODELS": "model-a",
+			}
+			for key, value := range test.values {
+				values[key] = value
+			}
+			if _, err := loadTurnStateWatcherSettings(getenvWith(values)); err == nil {
+				t.Fatalf("expected cross-binding configuration to be rejected: %v", test.values)
+			}
+		})
+	}
+}
+
+func TestLoadTurnStateWatcherSettingsRejectsInvalidValues(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name  string
+		key   string
+		value string
+	}{
+		{name: "toggle", key: "TURN_STATE_WATCHER", value: "sometimes"},
+		{name: "group", key: "TURN_STATE_PUSH_GROUP_ID", value: "zero"},
+		{name: "source credential", key: "TURN_STATE_CREDENTIAL_ID", value: "0"},
+		{name: "healthy lengths", key: "TURN_STATE_HEALTHY_LENGTHS", value: "292,nope"},
+		{name: "poll interval", key: "TURN_STATE_POLL_INTERVAL", value: "forever"},
+		{name: "verify attempts", key: "TURN_STATE_VERIFY_MAX_ATTEMPTS", value: "-1"},
+		{name: "proxy", key: "TURN_STATE_DEGRADE_PROXY_URL", value: "ftp://proxy.example.test:21"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			values := map[string]string{
+				"TURN_STATE_WATCHER":     "1",
+				"TURN_STATE_PUSH_MODELS": "gpt-5.6-sol",
+				test.key:                 test.value,
+			}
+			if _, err := loadTurnStateWatcherSettings(getenvWith(values)); err == nil {
+				t.Fatalf("expected %s=%q to be rejected", test.key, test.value)
+			}
+		})
 	}
 }
 
@@ -126,6 +220,21 @@ func TestTurnStateClassificationHelpers(t *testing.T) {
 	}
 	if turnStateModelWatched(models, "gpt-4o") {
 		t.Fatal("unwatched model must not match")
+	}
+}
+
+func TestTurnStateValueFreshUsesFernetIssuedAt(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 19, 12, 0, 0, 0, time.UTC)
+	raw := make([]byte, 1+8+16+10*16+32)
+	raw[0] = 0x80
+	binary.BigEndian.PutUint64(raw[1:9], uint64(now.Add(-2*time.Hour).Unix()))
+	value := base64.URLEncoding.EncodeToString(raw)
+	if turnStateValueFresh(value, now, now, time.Hour) {
+		t.Fatal("a structurally valid old Fernet token must use its issued time, not its observation time")
+	}
+	if !turnStateValueFresh(strings.Repeat("f", 292), now, now, time.Hour) {
+		t.Fatal("an unknown envelope should fall back to its trusted in-process observation time")
 	}
 }
 
@@ -172,18 +281,19 @@ func newTurnStateWatcherFixture(t *testing.T) (serviceFixture, *turnStateWatcher
 		observations: make(chan turnstate.Observation, turnStateObservationBuffer),
 		now:          func() time.Time { return time.UnixMilli(row.UpdatedAtMS + 5000) },
 		settings: turnStateWatcherSettings{
-			Enabled:       true,
-			WatchModels:   map[string]struct{}{"gpt-4o": {}},
-			PushModels:    "gpt-4o",
-			GroupID:       groupID,
-			CredentialID:  row.ID,
-			PushMaxAge:    time.Hour,
-			HealthyLength: map[int]struct{}{length: {}},
-			PollInterval:  defaultTurnStatePoll,
-			DirectProxy:   outboundproxy.Config{Mode: outboundproxy.ModeDirect},
-			VerifyModel:   "gpt-4o",
-			VerifyGap:     time.Second,
-			VerifyTime:    10 * time.Second,
+			Enabled:        true,
+			WatchModels:    map[string]struct{}{"gpt-4o": {}},
+			PushModels:     "gpt-4o",
+			GroupID:        groupID,
+			CredentialID:   row.ID,
+			PushMaxAge:     time.Hour,
+			HealthyLength:  map[int]struct{}{length: {}},
+			DegradedLength: map[int]struct{}{312: {}, 356: {}},
+			PollInterval:   defaultTurnStatePoll,
+			DirectProxy:    outboundproxy.Config{Mode: outboundproxy.ModeDirect},
+			VerifyModel:    "gpt-4o",
+			VerifyGap:      time.Second,
+			VerifyTime:     10 * time.Second,
 		},
 	}
 	return fixture, watcher, groupID, row.ID
@@ -243,6 +353,21 @@ func TestTurnStateWatcherPushesFreshHealthyState(t *testing.T) {
 	if row := credentialTurnStateRow(t, fixture, credentialID); row.CodexTurnState != fresh {
 		t.Fatal("stale observations must never be injected")
 	}
+
+	// 候选进入队列时还新鲜、真正落库前已经过期，也不能被延迟注入。
+	now := watcher.now()
+	watcher.now = func() time.Time { return now }
+	delayed := strings.Repeat("l", 292)
+	watcher.observe(t.Context(), turnstate.Observation{
+		CredentialID: credentialID, ClientModel: "gpt-4o",
+		TurnState: delayed, StatusCode: http.StatusOK,
+		ObservedAt: now.Add(-59 * time.Minute),
+	})
+	watcher.now = func() time.Time { return now.Add(2 * time.Minute) }
+	watcher.flushPush(t.Context())
+	if row := credentialTurnStateRow(t, fixture, credentialID); row.CodexTurnState != fresh {
+		t.Fatal("a queued observation that expired before flush must not be injected")
+	}
 }
 
 func TestTurnStateWatcherIgnoresUnwatchedModels(t *testing.T) {
@@ -257,6 +382,39 @@ func TestTurnStateWatcherIgnoresUnwatchedModels(t *testing.T) {
 	watcher.flushPush(t.Context())
 	if row := credentialTurnStateRow(t, fixture, credentialID); row.CodexTurnState != "" {
 		t.Fatal("unwatched model observations must not be pushed")
+	}
+}
+
+func TestTurnStateWatcherIgnoresOtherCredentialsAndUnknownShapes(t *testing.T) {
+	t.Parallel()
+	fixture, watcher, _, credentialID := newTurnStateWatcherFixture(t)
+	watcher.settings.DegradeProxy = outboundproxy.Config{
+		Mode: outboundproxy.ModeCustom, URL: "socks5://127.0.0.1:3010",
+	}
+	watcher.settings.DegradeReady = true
+
+	for _, observation := range []turnstate.Observation{
+		{
+			CredentialID: credentialID + 1, ClientModel: "gpt-4o",
+			TurnState: strings.Repeat("f", 292), StatusCode: http.StatusOK, ObservedAt: watcher.now(),
+		},
+		{
+			CredentialID: credentialID, ClientModel: "gpt-4o",
+			TurnState: strings.Repeat("u", 340), StatusCode: http.StatusOK, ObservedAt: watcher.now(),
+		},
+	} {
+		watcher.observe(t.Context(), observation)
+	}
+	watcher.sweep(t.Context())
+	row := credentialTurnStateRow(t, fixture, credentialID)
+	if row.CodexTurnState != "" || row.ProxyConfig != nil {
+		t.Fatalf("unrelated observations changed the target credential: state=%d proxy=%v", len(row.CodexTurnState), row.ProxyConfig != nil)
+	}
+	watcher.mu.Lock()
+	degraded := watcher.degraded
+	watcher.mu.Unlock()
+	if degraded {
+		t.Fatal("unknown turn-state lengths must not trigger proxy mutation")
 	}
 }
 
@@ -283,6 +441,8 @@ func TestTurnStateWatcherDegradesOnUnhealthyState(t *testing.T) {
 		CredentialID: credentialID, ClientModel: "gpt-4o",
 		TurnState: strings.Repeat("d", 312), StatusCode: http.StatusOK, ObservedAt: watcher.now(),
 	})
+	// 回归：下一个节拍不能把降级前残留的健康候选重新注入。
+	watcher.sweep(t.Context())
 
 	watcher.mu.Lock()
 	degraded := watcher.degraded
@@ -368,8 +528,15 @@ func TestTurnStateWatcherRestoresStartupDegradedState(t *testing.T) {
 	watcher.mu.Lock()
 	degraded, proxySet := watcher.degraded, watcher.degradeProxySet
 	watcher.mu.Unlock()
-	if !degraded || !proxySet {
-		t.Fatalf("startup on the degrade proxy must resume verification (degraded=%v set=%v)", degraded, proxySet)
+	if !degraded || proxySet {
+		t.Fatalf("startup on the degrade proxy must resume and reconfirm atomic state (degraded=%v set=%v)", degraded, proxySet)
+	}
+	watcher.sweep(t.Context())
+	watcher.mu.Lock()
+	proxySet = watcher.degradeProxySet
+	watcher.mu.Unlock()
+	if !proxySet {
+		t.Fatal("first sweep must confirm the cleared state and degrade proxy together")
 	}
 
 	// 未开启降级路径时不做任何恢复判定。
@@ -402,8 +569,8 @@ func TestTurnStateWatcherGiveUpAfterVerifyLimit(t *testing.T) {
 
 	watcher.mu.Lock()
 	watcher.degraded = true
-	watcher.degradeProxySet = true
 	watcher.mu.Unlock()
+	watcher.ensureDegraded(t.Context())
 	watcher.verifyOnce(t.Context())
 
 	watcher.mu.Lock()
@@ -417,15 +584,82 @@ func TestTurnStateWatcherGiveUpAfterVerifyLimit(t *testing.T) {
 	if len(stub.recordedSpecs()) != 1 {
 		t.Fatalf("sweep while paused must not probe, probe count = %d", len(stub.recordedSpecs()))
 	}
+
+	// 活跃验证期间的重复异常不能把计数清零；暂停以后下一条明确异常才开启新一轮。
+	watcher.mu.Lock()
+	watcher.verifyPaused = false
+	watcher.verifyAttempts = 1
+	watcher.mu.Unlock()
+	watcher.observe(t.Context(), turnstate.Observation{
+		CredentialID: watcher.settings.CredentialID, ClientModel: "gpt-4o",
+		TurnState: strings.Repeat("d", 312), StatusCode: http.StatusOK, ObservedAt: watcher.now(),
+	})
+	watcher.mu.Lock()
+	attempts = watcher.verifyAttempts
+	watcher.verifyPaused = true
+	watcher.mu.Unlock()
+	if attempts != 1 {
+		t.Fatalf("active degraded observation reset attempts to %d", attempts)
+	}
+	watcher.observe(t.Context(), turnstate.Observation{
+		CredentialID: watcher.settings.CredentialID, ClientModel: "gpt-4o",
+		TurnState: strings.Repeat("d", 312), StatusCode: http.StatusOK, ObservedAt: watcher.now(),
+	})
+	watcher.mu.Lock()
+	paused, attempts = watcher.verifyPaused, watcher.verifyAttempts
+	watcher.mu.Unlock()
+	if paused || attempts != 0 {
+		t.Fatalf("new degraded sighting should resume a paused cycle: paused=%v attempts=%d", paused, attempts)
+	}
+}
+
+func TestTurnStateWatcherRebuildsTargetAfterProxySwitch(t *testing.T) {
+	t.Parallel()
+	fixture, watcher, _, credentialID := newTurnStateWatcherFixture(t)
+	watcher.settings.DegradeProxy = outboundproxy.Config{
+		Mode: outboundproxy.ModeCustom, URL: "socks5://127.0.0.1:3010",
+	}
+	watcher.settings.DegradeReady = true
+	healthy := strings.Repeat("h", 292)
+	stub := &turnStateRecordingExecutor{result: execution.AttemptResult{
+		DispatchState: execution.DispatchMaybeSent, ResponseStarted: true,
+		StatusCode: http.StatusOK, UpstreamTurnState: healthy,
+	}}
+	fixture.service.executor = stub
+	watcher.mu.Lock()
+	watcher.degraded = true
+	// Simulate stale in-memory confirmation while the persisted credential is direct.
+	watcher.degradeProxySet = true
+	watcher.mu.Unlock()
+
+	watcher.verifyOnce(t.Context())
+	if got := len(stub.recordedSpecs()); got != 0 {
+		t.Fatalf("verification used the pre-switch target snapshot, probes = %d", got)
+	}
+	row := credentialTurnStateRow(t, fixture, credentialID)
+	if row.ProxyConfig == nil {
+		t.Fatal("verify should restore the degrade proxy before probing")
+	}
+
+	watcher.verifyOnce(t.Context())
+	if got := len(stub.recordedSpecs()); got != 1 {
+		t.Fatalf("verification after rebuilding the target probes = %d, want 1", got)
+	}
 }
 
 func TestTurnStateBusSubscribeAndRestore(t *testing.T) {
 	t.Parallel()
 	seen := make(chan turnstate.Observation, 1)
+	second := make(chan turnstate.Observation, 1)
 	restore := turnstate.Subscribe(func(o turnstate.Observation) { seen <- o })
+	restoreSecond := turnstate.Subscribe(func(o turnstate.Observation) { second <- o })
+	defer restoreSecond()
 	turnstate.Observe(turnstate.Observation{CredentialID: 7, TurnState: "value"})
 	if got := <-seen; got.CredentialID != 7 || got.TurnState != "value" {
 		t.Fatalf("observation = %+v", got)
+	}
+	if got := <-second; got.CredentialID != 7 {
+		t.Fatalf("second subscriber observation = %+v", got)
 	}
 	restore()
 	turnstate.Observe(turnstate.Observation{CredentialID: 8})
@@ -434,7 +668,12 @@ func TestTurnStateBusSubscribeAndRestore(t *testing.T) {
 		t.Fatalf("restore must detach the subscriber, got %+v", got)
 	default:
 	}
-	// 没有订阅者时 Observe 必须是无害的空操作。
+	if got := <-second; got.CredentialID != 8 {
+		t.Fatalf("detaching one subscriber affected another: %+v", got)
+	}
+	restoreSecond()
+	// 没有订阅者时 Observe 必须是无害的空操作；解除函数也必须幂等。
+	restoreSecond()
 	turnstate.Observe(turnstate.Observation{CredentialID: 9})
 }
 

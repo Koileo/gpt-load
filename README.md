@@ -236,6 +236,12 @@ At startup, the application reads `.env` in the current directory; existing proc
 
 Environment proxies apply only when no proxy is specified on the credential, group, or global settings.
 
+### Optional: automatic Codex turn-state negotiation
+
+Set `TURN_STATE_WATCHER=true` to enable the in-process watcher. Each watcher is strictly bound to one Codex subscription credential and one exact model. It consumes only that pair's 2xx upstream responses and injects fresh healthy states only into the same pair. A known degraded shape atomically clears the old state and switches the credential to a backup proxy, then pinned minimal Responses probes run until a healthy state can be atomically stored while restoring direct access. Unknown lengths are logged but never mutate the proxy.
+
+`TURN_STATE_PUSH_MODELS` is required and must contain exactly one model without commas or wildcards; see [`.env.example`](./.env.example) for the complete configuration. `TURN_STATE_PUSH_GROUP_ID` / `TURN_STATE_PUSH_CREDENTIAL_ID` select the bound credential. Legacy `TURN_STATE_CREDENTIAL_ID`, `TURN_STATE_MODELS`, and `TURN_STATE_VERIFY_MODEL` values are accepted only when they exactly match that credential and model. Individual accounts default to healthy/degraded lengths `292/312`, and Team accounts to `332/356`; override them with `TURN_STATE_HEALTHY_LENGTHS` and `TURN_STATE_DEGRADED_LENGTHS`. Proxy switching is enabled only when `TURN_STATE_DEGRADE_PROXY_URL` is set. The prototype names `TURN_STATE_312_PROXY_MODE` / `TURN_STATE_312_PROXY_URL` remain supported. Never commit an authenticated proxy URL.
+
 </details>
 
 ## Production considerations

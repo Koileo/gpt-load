@@ -236,6 +236,12 @@ Windows の一般ユーザーは代わりに `gpt-load-windows-setup.exe` を利
 
 環境プロキシは、認証情報、Group、グローバル設定のいずれにもプロキシが指定されていない場合にのみ適用されます。
 
+### オプション: Codex ターン状態の自動ネゴシエーション
+
+`TURN_STATE_WATCHER=true` でプロセス内 watcher を有効にできます。各 watcher は 1 つの Codex サブスクリプション認証情報と 1 つの具体的なモデルに厳密にバインドされ、その組み合わせの 2xx 上流応答だけを監視し、新しい正常状態も同じ組み合わせにだけ注入します。既知の異常形状を検出すると、古い状態の消去とバックアッププロキシへの切り替えを一度の更新で行い、その認証情報とモデルに固定した最小 Responses リクエストで検証します。回復時も、新しい状態の保存と direct への復帰を一度の更新で行います。未知の長さではプロキシを変更しません。
+
+`TURN_STATE_PUSH_MODELS` は必須で、カンマやワイルドカードを含まない 1 つのモデルだけを指定できます。完全な設定は [`.env.example`](./.env.example) を参照してください。バインド対象の認証情報は `TURN_STATE_PUSH_GROUP_ID` / `TURN_STATE_PUSH_CREDENTIAL_ID` で指定します。旧設定との互換性のため `TURN_STATE_CREDENTIAL_ID`、`TURN_STATE_MODELS`、`TURN_STATE_VERIFY_MODEL` も読み取りますが、それぞれバインド対象の認証情報とモデルに一致しない場合、watcher は起動しません。個人アカウントの正常/異常長は `292/312`、Team は `332/356` が既定で、`TURN_STATE_HEALTHY_LENGTHS` と `TURN_STATE_DEGRADED_LENGTHS` で変更できます。`TURN_STATE_DEGRADE_PROXY_URL` を設定した場合のみプロキシ切り替えが有効になります。旧スクリプト名 `TURN_STATE_312_PROXY_MODE` / `TURN_STATE_312_PROXY_URL` も引き続き利用できます。認証情報を含むプロキシ URL をリポジトリへコミットしないでください。
+
 </details>
 
 ## 本番運用の注意事項
