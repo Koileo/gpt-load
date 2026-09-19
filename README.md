@@ -10,8 +10,8 @@ API keys, subscription accounts, traffic scheduling, failure handling, request l
 
 English · [中文](README_CN.md) · [日本語](README_JP.md) | [Official Website](https://www.gpt-load.com)
 
-[![Last commit](https://img.shields.io/github/last-commit/DesuwaDev/gpt-load/main)](https://github.com/DesuwaDev/gpt-load/commits/main)
-[![Docker](https://img.shields.io/badge/Docker-ghcr.io%2Fkoileo%2Fgpt--load--private%3Alatest-2496ED?logo=docker&logoColor=white)](https://github.com/Koileo/gpt-load-private/pkgs/container/gpt-load-private)
+[![Last commit](https://img.shields.io/github/last-commit/Koileo/gpt-load/main)](https://github.com/Koileo/gpt-load/commits/main)
+[![Docker](https://img.shields.io/badge/Docker-ghcr.io%2Fkoileo%2Fgpt--load%3Alatest-2496ED?logo=docker&logoColor=white)](https://github.com/Koileo/gpt-load/pkgs/container/gpt-load)
 [![Go](https://img.shields.io/badge/Go-1.27-00ADD8?logo=go&logoColor=white)](go.mod)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
@@ -77,7 +77,7 @@ Your application only needs one base URL and one AccessKey. Providers, accounts,
 Requires Docker and Docker Compose.
 
 ```bash
-git clone --depth 1 https://github.com/DesuwaDev/gpt-load.git
+git clone --depth 1 https://github.com/Koileo/gpt-load.git
 cd gpt-load
 
 cp .env.example .env
@@ -181,14 +181,14 @@ docker compose pull && docker compose up -d   # update to the latest 2.x image
 docker compose stop         # stop the service
 ```
 
-This Compose file uses the public image `ghcr.io/koileo/gpt-load-private:latest`; pulling it does not require registry authentication. Images are built by [`docker-image.yml`](.github/workflows/docker-image.yml) on every push to `main`: `latest` and `2` both point at the newest `main` commit, and every build also publishes a `sha-<short-sha>` tag to pin against. Images are multi-platform (`linux/amd64`, `linux/arm64`). Upstream keeps its `latest` on 1.x; this fork does not follow that convention.
+This Compose file uses the public image `ghcr.io/koileo/gpt-load:latest`; pulling it does not require registry authentication. Images are built by [`docker-image.yml`](.github/workflows/docker-image.yml) on every push to `main`: `latest` and `2` both point at the newest `main` commit, and every build also publishes a `sha-<short-sha>` tag to pin against. Images are multi-platform (`linux/amd64`, `linux/arm64`). Upstream keeps its `latest` on 1.x; this fork does not follow that convention.
 
 <details>
 <summary>Using a native binary</summary>
 
 This fork publishes container images only, so its Releases page carries no assets yet — build from source, or publish your own release assets first.
 
-Download the build for your platform from [GitHub Releases](https://github.com/DesuwaDev/gpt-load/releases), and verify it against the bundled `SHA256SUMS` first:
+Download the build for your platform from [GitHub Releases](https://github.com/Koileo/gpt-load/releases), and verify it against the bundled `SHA256SUMS` first:
 
 ```bash
 chmod +x ./gpt-load-linux-amd64

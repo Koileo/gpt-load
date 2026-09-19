@@ -10,8 +10,8 @@ API キー、サブスクリプションアカウント、トラフィック制�
 
 [English](README.md) · [中文](README_CN.md) · 日本語 | [公式サイト](https://www.gpt-load.com)
 
-[![Last commit](https://img.shields.io/github/last-commit/DesuwaDev/gpt-load/main)](https://github.com/DesuwaDev/gpt-load/commits/main)
-[![Docker](https://img.shields.io/badge/Docker-ghcr.io%2Fkoileo%2Fgpt--load--private%3Alatest-2496ED?logo=docker&logoColor=white)](https://github.com/Koileo/gpt-load-private/pkgs/container/gpt-load-private)
+[![Last commit](https://img.shields.io/github/last-commit/Koileo/gpt-load/main)](https://github.com/Koileo/gpt-load/commits/main)
+[![Docker](https://img.shields.io/badge/Docker-ghcr.io%2Fkoileo%2Fgpt--load%3Alatest-2496ED?logo=docker&logoColor=white)](https://github.com/Koileo/gpt-load/pkgs/container/gpt-load)
 [![Go](https://img.shields.io/badge/Go-1.27-00ADD8?logo=go&logoColor=white)](go.mod)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
@@ -77,7 +77,7 @@ API キー、サブスクリプションアカウント、トラフィック制�
 Docker と Docker Compose が必要です。
 
 ```bash
-git clone --depth 1 https://github.com/DesuwaDev/gpt-load.git
+git clone --depth 1 https://github.com/Koileo/gpt-load.git
 cd gpt-load
 
 cp .env.example .env
@@ -181,14 +181,14 @@ docker compose pull && docker compose up -d   # 最新の 2.x イメージへ更
 docker compose stop         # サービスを停止
 ```
 
-本リポジトリの Compose は公開イメージ `ghcr.io/koileo/gpt-load-private:latest` を使用し、取得時にレジストリへのログインは不要です。イメージは [`docker-image.yml`](.github/workflows/docker-image.yml) が `main` への push ごとにビルドし、`latest` と `2` はどちらも `main` の最新コミットを指します。各ビルドではバージョン固定用に `sha-<短縮 sha>` タグも発行します。イメージはマルチプラットフォーム（`linux/amd64`、`linux/arm64`）です。上流は `latest` を 1.x に残していますが、本リポジトリはその方針を踏襲しません。
+本リポジトリの Compose は公開イメージ `ghcr.io/koileo/gpt-load:latest` を使用し、取得時にレジストリへのログインは不要です。イメージは [`docker-image.yml`](.github/workflows/docker-image.yml) が `main` への push ごとにビルドし、`latest` と `2` はどちらも `main` の最新コミットを指します。各ビルドではバージョン固定用に `sha-<短縮 sha>` タグも発行します。イメージはマルチプラットフォーム（`linux/amd64`、`linux/arm64`）です。上流は `latest` を 1.x に残していますが、本リポジトリはその方針を踏襲しません。
 
 <details>
 <summary>ネイティブバイナリを使う</summary>
 
 本リポジトリはコンテナイメージのみを公開しているため、Releases ページに成果物はありません。ソースからビルドするか、先にご自身の release 成果物を公開してください。
 
-[GitHub Releases](https://github.com/DesuwaDev/gpt-load/releases) からプラットフォームに合ったファイルをダウンロードし、同梱の `SHA256SUMS` で検証してから使用してください：
+[GitHub Releases](https://github.com/Koileo/gpt-load/releases) からプラットフォームに合ったファイルをダウンロードし、同梱の `SHA256SUMS` で検証してから使用してください：
 
 ```bash
 chmod +x ./gpt-load-linux-amd64
