@@ -27,6 +27,7 @@ import (
 	"gpt-load/internal/subscription"
 	providerobservation "gpt-load/internal/subscription/providers/observation"
 	subscriptionruntime "gpt-load/internal/subscription/runtime"
+	"gpt-load/internal/turnstate"
 	"gpt-load/internal/usage"
 )
 
@@ -60,6 +61,22 @@ func observedTurnState(headers http.Header) string {
 // 观测到的 state 实测在 300 字符上下，留一个数量级的余量即可；超限的一律丢弃，
 // 截断后的 state 既不能复用也会误导排查。
 const maxObservedTurnStateBytes = 4096
+
+// observeTurnState 把 2xx 尝试上观测到的 turn state 转发给进程内订阅者。空值与
+// 非成功响应不产生事件：失败尝试带的头没有注入价值，也不该触发降级判定。
+func observeTurnState(spec execution.AttemptSpec, statusCode int, value string) {
+	if value == "" || statusCode < http.StatusOK || statusCode >= http.StatusMultipleChoices {
+		return
+	}
+	turnstate.Observe(turnstate.Observation{
+		CredentialID:  spec.Credential.ID,
+		ClientModel:   spec.ClientModel,
+		UpstreamModel: spec.UpstreamModel,
+		StatusCode:    statusCode,
+		TurnState:     value,
+		ObservedAt:    time.Now(),
+	})
+}
 
 type Adapter struct {
 	credentials credentialPreparer
@@ -134,6 +151,7 @@ func (a *Adapter) Execute(ctx context.Context, spec execution.AttemptSpec) (resu
 		if result.UpstreamTurnState == "" {
 			result.UpstreamTurnState = turnState
 		}
+		observeTurnState(spec, result.StatusCode, result.UpstreamTurnState)
 	}()
 	provider, baseURL, err := a.validateSpec(spec)
 	if err != nil {
@@ -307,6 +325,7 @@ func (a *Adapter) ExecuteStream(
 		if result.UpstreamTurnState == "" {
 			result.UpstreamTurnState = turnState
 		}
+		observeTurnState(spec, result.StatusCode, result.UpstreamTurnState)
 	}()
 	if sink == nil {
 		return streamNotSent(execution.ErrorKindInvalidRequest, "stream sink is required", "")

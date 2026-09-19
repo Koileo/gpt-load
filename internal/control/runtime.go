@@ -37,6 +37,12 @@ type catalogSyncRuntime interface {
 	Run(context.Context)
 }
 
+// turnStateWatchRuntime 是可选的后台 watcher 钩子：控制面 Service 未开启对应
+// 功能时其实现立即返回，不产生任何行为。
+type turnStateWatchRuntime interface {
+	RunTurnStateWatcher(context.Context)
+}
+
 // RequestLogCleaner is the control-owned scheduling view of request log
 // retention. The requestlog package owns all cleanup semantics.
 type RequestLogCleaner interface {
@@ -171,6 +177,13 @@ func (runtime *Runtime) Run(ctx context.Context) {
 		go func() {
 			defer wait.Done()
 			runtime.oauthCallback.Run(ctx)
+		}()
+	}
+	if watcher, ok := runtime.operationRecovery.(turnStateWatchRuntime); ok {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			watcher.RunTurnStateWatcher(ctx)
 		}()
 	}
 	wait.Wait()
