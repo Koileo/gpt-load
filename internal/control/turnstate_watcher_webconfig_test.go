@@ -75,8 +75,12 @@ func TestTurnStateWatcherSettingsFromConfigDisabled(t *testing.T) {
 func TestResolveTurnStateWatcherSettingsPrefersWebConfig(t *testing.T) {
 	t.Parallel()
 	envSettings := turnStateWatcherSettings{Enabled: true, PushModels: "env-model"}
-	webConfig := &state.TurnStateWatcherConfig{
-		Enabled: true, PushModels: "web-model", HealthyLengths: []int{292}, DegradedLengths: []int{312},
+	webConfig, err := state.ParseTurnStateWatcherConfig(map[string]any{
+		"enabled": true, "push_models": "web-model",
+		"healthy_lengths": []any{292}, "degraded_lengths": []any{312},
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 	snapshot := &state.ConfigSnapshot{}
 	snapshot.Settings.TurnStateWatcher = webConfig
@@ -166,7 +170,16 @@ func TestRunTurnStateWatcherHotReloadsWebConfig(t *testing.T) {
 	fresh := strings.Repeat("f", 292)
 	waitPushed("gpt-4o", fresh)
 
-	// 阶段二：Web 配置改成 gpt-4o-mini 后热重启，旧模型的观测不再生效。
+	// 阶段二：无关设置发布不能把配置未变的 watcher 停掉。
+	unrelated := watcherConfig("gpt-4o")
+	unrelated[state.SettingRequestTimeout] = 900
+	if _, err := fixture.manager.Publish(state.CompileInput{SystemSettings: unrelated}); err != nil {
+		t.Fatalf("publish unrelated config: %v", err)
+	}
+	stillRunning := strings.Repeat("u", 292)
+	waitPushed("gpt-4o", stillRunning)
+
+	// 阶段三：Web 配置改成 gpt-4o-mini 后热重启，旧模型的观测不再生效。
 	if _, err := fixture.manager.Publish(state.CompileInput{SystemSettings: watcherConfig("gpt-4o-mini")}); err != nil {
 		t.Fatalf("publish reloaded watcher config: %v", err)
 	}
@@ -174,10 +187,74 @@ func TestRunTurnStateWatcherHotReloadsWebConfig(t *testing.T) {
 	reloaded := strings.Repeat("r", 292)
 	waitPushed("gpt-4o-mini", reloaded)
 
+	// 阶段四：停用后用完全相同的配置重新启用，必须重新启动。
+	if _, err := fixture.manager.Publish(state.CompileInput{SystemSettings: config.Settings{
+		state.SettingTurnStateWatcher: map[string]any{"enabled": false},
+	}}); err != nil {
+		t.Fatalf("disable watcher config: %v", err)
+	}
+	time.Sleep(300 * time.Millisecond)
+	if _, err := fixture.manager.Publish(state.CompileInput{SystemSettings: watcherConfig("gpt-4o-mini")}); err != nil {
+		t.Fatalf("re-enable watcher config: %v", err)
+	}
+	reenabled := strings.Repeat("e", 292)
+	waitPushed("gpt-4o-mini", reenabled)
+
 	cancel()
 	select {
 	case <-done:
 	case <-time.After(10 * time.Second):
 		t.Fatal("RunTurnStateWatcher must stop after the context is cancelled")
+	}
+}
+
+func TestSuperviseTurnStateWatcherStartsEnvironmentConfig(t *testing.T) {
+	t.Parallel()
+	fixture := newServiceFixture(t)
+	groupID := createGroupWithCredentials(t, fixture, "sk-turn-state-env-supervisor")
+	var credential models.Credential
+	if err := fixture.db.Where("group_id = ?", groupID).Take(&credential).Error; err != nil {
+		t.Fatal(err)
+	}
+	envSettings := turnStateWatcherSettings{
+		Enabled: true, GroupID: groupID, CredentialID: credential.ID,
+		PushModels: "gpt-4o", WatchModels: map[string]struct{}{"gpt-4o": {}},
+		PushMaxAge: time.Hour, PollInterval: 50 * time.Millisecond,
+		HealthyLength: map[int]struct{}{292: {}}, DegradedLength: map[int]struct{}{312: {}},
+		VerifyGap: time.Minute, VerifyTime: time.Minute,
+		DirectProxy: outboundproxy.Config{Mode: outboundproxy.ModeDirect},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		fixture.service.superviseTurnStateWatcher(ctx, envSettings, nil)
+	}()
+
+	want := strings.Repeat("v", 292)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		turnstate.Observe(turnstate.Observation{
+			CredentialID: credential.ID, ClientModel: "gpt-4o",
+			TurnState: want, StatusCode: 200, ObservedAt: time.Now(),
+		})
+		var row models.Credential
+		if err := fixture.db.Where("id = ?", credential.ID).Take(&row).Error; err != nil {
+			t.Fatal(err)
+		}
+		if row.CodexTurnState == want {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("environment watcher did not start under the supervisor")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("supervisor did not stop")
 	}
 }

@@ -528,6 +528,7 @@ func decodeSettingValue(raw string) (any, error) {
 func isIgnoredSystemSetting(key string) bool {
 	return strings.HasPrefix(key, models.InternalSystemSettingPrefix) ||
 		key == outboundproxy.SystemSettingKey ||
+		key == state.SettingTurnStateWatcher ||
 		key == "contact_info" // 兼容本分支旧版本保存的已移除设置。
 }
 
@@ -603,6 +604,14 @@ func mapSystemAndGroups(
 				return state.CompileInput{}, fmt.Errorf("decode global proxy config: %w", err)
 			}
 			input.GlobalProxy = config
+			continue
+		}
+		if row.Key == state.SettingTurnStateWatcher {
+			value, err := decodePersistedTurnStateWatcher(row.Value, encryptionService)
+			if err != nil {
+				return state.CompileInput{}, fmt.Errorf("decode turn-state watcher config: %w", err)
+			}
+			input.SystemSettings[row.Key] = value
 			continue
 		}
 		if isIgnoredSystemSetting(row.Key) {
@@ -681,6 +690,30 @@ func decodePersistedProxy(
 		return nil, fmt.Errorf("validate proxy config")
 	}
 	return &config, nil
+}
+
+func decodePersistedTurnStateWatcher(
+	stored string,
+	encryptionService encryption.Service,
+) (any, error) {
+	// 兼容短暂发布过的明文格式；所有新写入都使用加密格式。
+	plaintext := stored
+	if !json.Valid([]byte(stored)) {
+		if encryptionService == nil || stored == "" {
+			return nil, fmt.Errorf("turn-state watcher encryption service is unavailable")
+		}
+		decrypted, err := encryptionService.Decrypt(stored)
+		if err != nil {
+			return nil, fmt.Errorf("decrypt turn-state watcher config")
+		}
+		plaintext = decrypted
+	}
+	value, err := decodeSettingValue(plaintext)
+	plaintext = ""
+	if err != nil {
+		return nil, fmt.Errorf("validate turn-state watcher config")
+	}
+	return value, nil
 }
 
 func mapAccessKeys(

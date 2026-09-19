@@ -78,6 +78,124 @@ func TestSettingsProxyConfigIsEncryptedMaskedAndResettable(t *testing.T) {
 	}
 }
 
+func TestSettingsTurnStateWatcherIsEncryptedMaskedAndPreservesProxySecret(t *testing.T) {
+	t.Parallel()
+	fixture := newServiceFixture(t)
+	groupID := createGroupWithCredentials(t, fixture, "sk-turn-state-settings")
+	var credential models.Credential
+	if err := fixture.db.Where("group_id = ?", groupID).Take(&credential).Error; err != nil {
+		t.Fatal(err)
+	}
+	const endpoint = "http://watcher-user:watcher-password@proxy.example.com:8080"
+	payload, err := json.Marshal(map[string]any{
+		"enabled": true, "group_id": groupID, "credential_id": credential.ID,
+		"push_models": "gpt-4o", "degrade_proxy_url": endpoint,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, err := fixture.service.UpdateSettings(t.Context(), SettingsUpdateRequest{
+		Settings: map[string]json.RawMessage{state.SettingTurnStateWatcher: payload},
+	})
+	if err != nil {
+		t.Fatalf("UpdateSettings(turn-state watcher) error = %v", err)
+	}
+	view := updated.Values.TurnStateWatcher
+	if view == nil || view.DegradeProxyURL != "http://watcher-user:******@proxy.example.com:8080" {
+		t.Fatalf("turn-state watcher view = %#v", view)
+	}
+	if strings.Contains(view.DegradeProxyURL, "watcher-password") {
+		t.Fatalf("turn-state watcher response leaked proxy password: %q", view.DegradeProxyURL)
+	}
+
+	var row models.SystemSetting
+	if err := fixture.db.Where("key = ?", state.SettingTurnStateWatcher).Take(&row).Error; err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(row.Value, endpoint) || strings.Contains(row.Value, "watcher-password") {
+		t.Fatalf("turn-state watcher stored plaintext: %q", row.Value)
+	}
+	plaintext, err := fixture.encryption.Decrypt(row.Value)
+	if err != nil {
+		t.Fatalf("decrypt turn-state watcher: %v", err)
+	}
+	if !strings.Contains(plaintext, endpoint) {
+		t.Fatalf("decrypted turn-state watcher does not contain endpoint: %s", plaintext)
+	}
+	if runtimeConfig := fixture.manager.Current().Settings.TurnStateWatcher; runtimeConfig == nil || runtimeConfig.DegradeProxyURL != endpoint {
+		t.Fatalf("runtime turn-state watcher = %#v", runtimeConfig)
+	}
+
+	// The masked response can be submitted while editing another field without
+	// replacing the real password with the mask.
+	view.Verbose = true
+	maskedPayload, err := json.Marshal(view)
+	if err != nil {
+		t.Fatal(err)
+	}
+	roundTripped, err := fixture.service.UpdateSettings(t.Context(), SettingsUpdateRequest{
+		Settings: map[string]json.RawMessage{state.SettingTurnStateWatcher: maskedPayload},
+	})
+	if err != nil {
+		t.Fatalf("UpdateSettings(masked turn-state watcher) error = %v", err)
+	}
+	if runtimeConfig := fixture.manager.Current().Settings.TurnStateWatcher; runtimeConfig == nil || runtimeConfig.DegradeProxyURL != endpoint || !runtimeConfig.Verbose {
+		t.Fatalf("round-tripped runtime config = %#v", runtimeConfig)
+	}
+	if got := roundTripped.Values.TurnStateWatcher; got == nil || strings.Contains(got.DegradeProxyURL, "watcher-password") {
+		t.Fatalf("round-tripped response = %#v", got)
+	}
+
+	input, err := stateloader.BuildCompileInputWithProxy(
+		t.Context(), fixture.db, fixture.encryption, nil, fixture.service.channelRegistry,
+	)
+	if err != nil {
+		t.Fatalf("reload encrypted turn-state watcher: %v", err)
+	}
+	reloaded, err := state.Compile(input)
+	if err != nil {
+		t.Fatalf("compile reloaded turn-state watcher: %v", err)
+	}
+	if got := reloaded.Settings.TurnStateWatcher; got == nil || got.DegradeProxyURL != endpoint {
+		t.Fatalf("reloaded turn-state watcher = %#v", got)
+	}
+}
+
+func TestSettingsTurnStateWatcherRejectsMismatchedBinding(t *testing.T) {
+	t.Parallel()
+	fixture := newServiceFixture(t)
+	groupID := createGroupWithCredentials(t, fixture, "sk-turn-state-binding")
+	var credential models.Credential
+	if err := fixture.db.Where("group_id = ?", groupID).Take(&credential).Error; err != nil {
+		t.Fatal(err)
+	}
+	before := fixture.manager.Current()
+	payload, err := json.Marshal(map[string]any{
+		"enabled": true, "group_id": groupID + 1, "credential_id": credential.ID,
+		"push_models": "gpt-4o",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = fixture.service.UpdateSettings(t.Context(), SettingsUpdateRequest{
+		Settings: map[string]json.RawMessage{state.SettingTurnStateWatcher: payload},
+	})
+	if !errors.Is(err, app_errors.ErrValidation) {
+		t.Fatalf("mismatched watcher binding error = %v, want validation", err)
+	}
+	if fixture.manager.Current() != before {
+		t.Fatal("mismatched watcher binding published a snapshot")
+	}
+	var count int64
+	if err := fixture.db.Model(&models.SystemSetting{}).
+		Where("key = ?", state.SettingTurnStateWatcher).Count(&count).Error; err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("mismatched watcher binding persisted %d rows", count)
+	}
+}
+
 func TestUpdateSettingsRouteStrategyPersistsPublishesReloadsAndResets(t *testing.T) {
 	t.Parallel()
 	fixture := newServiceFixture(t)

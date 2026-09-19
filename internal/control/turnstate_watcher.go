@@ -373,14 +373,29 @@ func (s *Service) superviseTurnStateWatcher(
 	envSettings turnStateWatcherSettings,
 	envErr error,
 ) {
+	var running bool
 	var runningSource *state.TurnStateWatcherConfig
+	var runningCancel context.CancelFunc
+	var runningDone <-chan struct{}
 	for {
 		if ctx.Err() != nil {
+			if runningCancel != nil {
+				runningCancel()
+				<-runningDone
+			}
 			return
 		}
 		snapshot, updates := s.manager.CurrentWithUpdates()
 		settings, source := resolveTurnStateWatcherSettings(snapshot, envSettings, envErr)
-		if settings == nil || source.Equal(runningSource) {
+		if settings == nil {
+			if runningCancel != nil {
+				runningCancel()
+				<-runningDone
+			}
+			running = false
+			runningSource = nil
+			runningCancel = nil
+			runningDone = nil
 			select {
 			case <-ctx.Done():
 				return
@@ -388,25 +403,37 @@ func (s *Service) superviseTurnStateWatcher(
 			}
 			continue
 		}
-		innerCtx, cancel := context.WithCancel(ctx)
-		done := make(chan struct{})
-		go func() {
-			defer close(done)
-			s.runTurnStateWatcherOnce(innerCtx, *settings)
-		}()
-		runningSource = source
+		if !running || !source.Equal(runningSource) {
+			if runningCancel != nil {
+				runningCancel()
+				<-runningDone
+			}
+			innerCtx, cancel := context.WithCancel(ctx)
+			done := make(chan struct{})
+			go func(settings turnStateWatcherSettings) {
+				defer close(done)
+				s.runTurnStateWatcherOnce(innerCtx, settings)
+			}(*settings)
+			running = true
+			runningSource = source
+			runningCancel = cancel
+			runningDone = done
+		}
 		select {
 		case <-ctx.Done():
-			cancel()
-			<-done
+			runningCancel()
+			<-runningDone
 			return
 		case <-updates:
-			cancel()
-			<-done
-		case <-done:
-			cancel()
+			// 先读取新快照再决定是否重启；无关设置更新不应中断 watcher。
+			continue
+		case <-runningDone:
+			runningCancel()
 			// 内层自行退出属于异常场景；等下一次配置变更再尝试重启。
+			running = false
 			runningSource = nil
+			runningCancel = nil
+			runningDone = nil
 			select {
 			case <-ctx.Done():
 				return
@@ -499,6 +526,10 @@ func turnStateWatcherSettingsFromConfig(
 	}
 	if !config.Enabled || config.PushModels == "" {
 		return settings, fmt.Errorf("turn state watcher config is not enabled")
+	}
+	if settings.PushMaxAge <= 0 || settings.PollInterval <= 0 ||
+		settings.VerifyGap <= 0 || settings.VerifyTime <= 0 {
+		return settings, fmt.Errorf("turn state watcher duration is out of range")
 	}
 	settings.WatchModels = map[string]struct{}{strings.ToLower(config.PushModels): {}}
 	settings.HealthyLength = make(map[int]struct{}, len(config.HealthyLengths))

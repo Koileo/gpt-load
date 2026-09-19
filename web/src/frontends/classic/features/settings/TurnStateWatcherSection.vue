@@ -29,6 +29,8 @@ const { t } = useI18n()
 const client = useApiClient()
 
 const defaultLengths = { healthy: '292, 332', degraded: '312, 356' } as const
+const maxDurationMilliseconds = 9_223_372_036_854
+const maxDurationSeconds = 9_223_372_036
 
 interface TurnStateFormState {
   enabled: boolean
@@ -76,7 +78,7 @@ function buildFormState(config: TurnStateWatcherConfigDto): TurnStateFormState {
 
 // 未配置时的展示基线：与后端 ParseTurnStateWatcherConfig 的默认值一致。
 const defaultForm = (): TurnStateFormState => ({
-  enabled: true,
+  enabled: false,
   groupId: '1',
   credentialId: '1',
   pushModels: '',
@@ -122,6 +124,7 @@ const credentialSelectOptions = computed(() =>
 
 function updateField<K extends keyof TurnStateFormState>(key: K, value: TurnStateFormState[K]) {
   form.value[key] = value
+  if (key === 'groupId') form.value.credentialId = ''
   emitChange()
 }
 
@@ -188,11 +191,14 @@ function lengthsError(text: string, requiredKey: string): string | undefined {
 
 const positiveError = computed(() =>
   [
-    form.value.pushMaxAgeMs,
-    form.value.pollInterval,
-    form.value.verifyInterval,
-    form.value.verifyTimeout,
-  ].some((text) => !Number.isSafeInteger(Number(text)) || Number(text) < 1)
+    [form.value.pushMaxAgeMs, maxDurationMilliseconds],
+    [form.value.pollInterval, maxDurationSeconds],
+    [form.value.verifyInterval, maxDurationSeconds],
+    [form.value.verifyTimeout, maxDurationSeconds],
+  ].some(
+    ([text, maximum]) =>
+      !Number.isSafeInteger(Number(text)) || Number(text) < 1 || Number(text) > Number(maximum),
+  )
     ? t('settings.turnState.errors.positiveNumber')
     : undefined,
 )
@@ -203,16 +209,24 @@ const verifyMaxError = computed(() =>
 )
 const proxyError = computed(() => {
   const url = form.value.degradeProxyUrl.trim()
-  if (url && !/^(https?|socks5):\/\/\S+$/iu.test(url)) {
+  if (url && !/^(http|socks5):\/\/\S+$/iu.test(url)) {
     return t('settings.turnState.errors.proxyUrl')
   }
   return undefined
 })
-const bindingError = computed(() =>
-  selectedGroupId.value < 1 || Number(form.value.credentialId) < 1
-    ? t('settings.turnState.errors.bindingRequired')
-    : undefined,
-)
+const bindingError = computed(() => {
+  if (selectedGroupId.value < 1 || Number(form.value.credentialId) < 1) {
+    return t('settings.turnState.errors.bindingRequired')
+  }
+  if (!form.value.enabled) return undefined
+  if (
+    credentialQuery.isPending.value ||
+    !credentialSelectOptions.value.some((option) => option.value === form.value.credentialId)
+  ) {
+    return t('settings.turnState.errors.bindingRequired')
+  }
+  return undefined
+})
 
 const isValid = computed(
   () =>

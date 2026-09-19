@@ -218,7 +218,7 @@ export default {
         lengthsOverlap: 'A length cannot be both healthy and degraded.',
         positiveNumber: 'Enter a positive integer.',
         nonNegativeNumber: 'Enter 0 or a positive integer.',
-        proxyUrl: 'Enter an http(s) or socks5 proxy URL.',
+        proxyUrl: 'Enter an http or socks5 proxy URL.',
         bindingRequired: 'Select a group and a credential.',
       },
     },

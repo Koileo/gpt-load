@@ -126,7 +126,9 @@ func ParseTurnStateWatcherConfig(value any) (*TurnStateWatcherConfig, error) {
 		config.CredentialID = parsed
 	}
 	if _, exists := object["push_max_age_ms"]; exists {
-		parsed, err := wholeNumberInRange(pathAt("push_max_age_ms"), object["push_max_age_ms"], 1, maxTurnStateNumber)
+		parsed, err := turnStateDurationNumber(
+			pathAt("push_max_age_ms"), object["push_max_age_ms"], time.Millisecond,
+		)
 		if err != nil {
 			return nil, err
 		}
@@ -153,8 +155,8 @@ func ParseTurnStateWatcherConfig(value any) (*TurnStateWatcherConfig, error) {
 		}
 	}
 	if _, exists := object["poll_interval_seconds"]; exists {
-		parsed, err := wholeNumberInRange(
-			pathAt("poll_interval_seconds"), object["poll_interval_seconds"], 1, maxTurnStateNumber,
+		parsed, err := turnStateDurationNumber(
+			pathAt("poll_interval_seconds"), object["poll_interval_seconds"], time.Second,
 		)
 		if err != nil {
 			return nil, err
@@ -167,8 +169,8 @@ func ParseTurnStateWatcherConfig(value any) (*TurnStateWatcherConfig, error) {
 		return nil, err
 	}
 	if _, exists := object["verify_interval_seconds"]; exists {
-		parsed, err := wholeNumberInRange(
-			pathAt("verify_interval_seconds"), object["verify_interval_seconds"], 1, maxTurnStateNumber,
+		parsed, err := turnStateDurationNumber(
+			pathAt("verify_interval_seconds"), object["verify_interval_seconds"], time.Second,
 		)
 		if err != nil {
 			return nil, err
@@ -176,8 +178,8 @@ func ParseTurnStateWatcherConfig(value any) (*TurnStateWatcherConfig, error) {
 		config.VerifyIntervalSeconds = int64(parsed)
 	}
 	if _, exists := object["verify_timeout_seconds"]; exists {
-		parsed, err := wholeNumberInRange(
-			pathAt("verify_timeout_seconds"), object["verify_timeout_seconds"], 1, maxTurnStateNumber,
+		parsed, err := turnStateDurationNumber(
+			pathAt("verify_timeout_seconds"), object["verify_timeout_seconds"], time.Second,
 		)
 		if err != nil {
 			return nil, err
@@ -237,6 +239,11 @@ func turnStatePositiveUint(path string, value any) (uint, error) {
 		return 0, err
 	}
 	return uint(parsed), nil
+}
+
+func turnStateDurationNumber(path string, value any, unit time.Duration) (int, error) {
+	maximum := int(math.MaxInt64 / int64(unit))
+	return wholeNumberInRange(path, value, 1, maximum)
 }
 
 func parseTurnStateLengths(path string, value any, fallback []int) ([]int, error) {

@@ -209,7 +209,7 @@ export default {
         lengthsOverlap: '同じ長さを正常と異常の両方にすることはできません。',
         positiveNumber: '正の整数を入力してください。',
         nonNegativeNumber: '0 以上の整数を入力してください。',
-        proxyUrl: 'http(s) または socks5 のプロキシ URL を入力してください。',
+        proxyUrl: 'http または socks5 のプロキシ URL を入力してください。',
         bindingRequired: 'グループと資格情報を選択してください。',
       },
     },

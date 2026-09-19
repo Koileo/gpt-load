@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strings"
 	"time"
 
 	"gorm.io/gorm"
@@ -71,8 +72,9 @@ type SettingsUpdateRequest struct {
 }
 
 type persistedSettingUpdate struct {
-	key   string
-	value *string
+	key              string
+	value            *string
+	turnStateWatcher *state.TurnStateWatcherConfig
 }
 
 func (request *SettingsUpdateRequest) UnmarshalJSON(data []byte) error {
@@ -141,16 +143,21 @@ func (s *Service) UpdateSettings(
 	ctx context.Context,
 	request SettingsUpdateRequest,
 ) (SettingsResponse, error) {
-	updates, err := normalizeSettingUpdates(request, s.encryption)
-	if err != nil {
-		return SettingsResponse{}, err
-	}
 	if s.modelsDevAutoSyncOverride != nil && settingRequestContains(request, state.SettingModelsDevAutoSyncEnabled) {
 		return SettingsResponse{}, app_errors.ErrValidation
 	}
 
 	previousAutoSyncEnabled := false
 	snapshot, err := s.writeConfig(ctx, func(tx *gorm.DB) error {
+		current := s.manager.Current()
+		var currentWatcher *state.TurnStateWatcherConfig
+		if current != nil {
+			currentWatcher = current.Settings.TurnStateWatcher
+		}
+		updates, normalizeErr := normalizeSettingUpdates(request, s.encryption, currentWatcher)
+		if normalizeErr != nil {
+			return normalizeErr
+		}
 		previousAutoSyncEnabled = s.modelsDevAutoSyncEnabled()
 		return s.applySettingUpdates(tx, updates)
 	}, nil)
@@ -175,6 +182,21 @@ func (s *Service) applySettingUpdates(
 	tx *gorm.DB,
 	updates []persistedSettingUpdate,
 ) error {
+	for _, update := range updates {
+		config := update.turnStateWatcher
+		if config == nil || !config.Enabled {
+			continue
+		}
+		var count int64
+		if err := tx.Model(&models.Credential{}).
+			Where("id = ? AND group_id = ?", config.CredentialID, config.GroupID).
+			Count(&count).Error; err != nil {
+			return app_errors.ParseDBError(err)
+		}
+		if count != 1 {
+			return app_errors.ErrValidation
+		}
+	}
 	for _, update := range updates {
 		if update.value == nil {
 			if err := tx.Where(&models.SystemSetting{Key: update.key}).
@@ -204,6 +226,7 @@ func (s *Service) applySettingUpdates(
 func normalizeSettingUpdates(
 	request SettingsUpdateRequest,
 	encryptionService encryption.Service,
+	currentWatcher *state.TurnStateWatcherConfig,
 ) ([]persistedSettingUpdate, error) {
 	if len(request.Settings) == 0 {
 		return nil, app_errors.ErrBadRequest
@@ -217,7 +240,7 @@ func normalizeSettingUpdates(
 	updates := make([]persistedSettingUpdate, 0, len(keys))
 	for _, key := range keys {
 		// turn_state_watcher 与 proxy_config 一样单独放行：它不进逐键
-		// overrides 体系，由 state.ValidateRuntimeSetting 完成整体校验。
+		// overrides 体系，并使用独立的加密持久化格式。
 		if key != outboundproxy.SystemSettingKey &&
 			key != state.SettingTurnStateWatcher &&
 			!state.IsRuntimeSettingKey(key) {
@@ -248,6 +271,28 @@ func normalizeSettingUpdates(
 		if err != nil {
 			return nil, app_errors.ErrValidation
 		}
+		if key == state.SettingTurnStateWatcher {
+			value, err = restoreMaskedTurnStateProxy(value, currentWatcher)
+			if err != nil {
+				return nil, app_errors.ErrValidation
+			}
+			config, parseErr := state.ParseTurnStateWatcherConfig(value)
+			if parseErr != nil || config == nil || encryptionService == nil {
+				return nil, app_errors.ErrValidation
+			}
+			encoded, marshalErr := json.Marshal(config)
+			if marshalErr != nil {
+				return nil, app_errors.ErrValidation
+			}
+			ciphertext, encryptErr := encryptionService.Encrypt(string(encoded))
+			if encryptErr != nil {
+				return nil, app_errors.ErrInternalServer
+			}
+			updates = append(updates, persistedSettingUpdate{
+				key: key, value: &ciphertext, turnStateWatcher: config,
+			})
+			continue
+		}
 		if err := state.ValidateRuntimeSetting(key, value); err != nil {
 			return nil, app_errors.ErrValidation
 		}
@@ -259,6 +304,45 @@ func normalizeSettingUpdates(
 		updates = append(updates, persistedSettingUpdate{key: key, value: &text})
 	}
 	return updates, nil
+}
+
+func restoreMaskedTurnStateProxy(
+	value any,
+	current *state.TurnStateWatcherConfig,
+) (any, error) {
+	object, ok := value.(map[string]any)
+	if !ok {
+		return value, nil
+	}
+	rawURL, ok := object["degrade_proxy_url"].(string)
+	if !ok {
+		return value, nil
+	}
+	if current == nil || current.DegradeProxyURL == "" {
+		if strings.Contains(rawURL, ":******@") {
+			return nil, fmt.Errorf("masked proxy credentials cannot be used as a new secret")
+		}
+		return value, nil
+	}
+	displayURL, hasAuth, err := outboundproxy.Display(outboundproxy.Config{
+		Mode: outboundproxy.Mode(current.DegradeProxyMode), URL: current.DegradeProxyURL,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if !hasAuth || strings.TrimSpace(rawURL) != displayURL {
+		if strings.Contains(rawURL, ":******@") {
+			return nil, fmt.Errorf("masked proxy credentials must match the saved proxy")
+		}
+		return value, nil
+	}
+	cloned := make(map[string]any, len(object))
+	for key, item := range object {
+		cloned[key] = item
+	}
+	cloned["degrade_proxy_mode"] = current.DegradeProxyMode
+	cloned["degrade_proxy_url"] = current.DegradeProxyURL
+	return cloned, nil
 }
 
 func settingRequestContains(request SettingsUpdateRequest, key string) bool {
@@ -337,6 +421,10 @@ func mapSettingsResponse(
 		modelsDevAutoSyncEnabled = *modelsDevAutoSyncOverride
 		readOnly = append(readOnly, state.SettingModelsDevAutoSyncEnabled)
 	}
+	turnStateWatcher, err := turnStateWatcherSettingsView(settings.TurnStateWatcher)
+	if err != nil {
+		return SettingsResponse{}, app_errors.ErrInternalServer
+	}
 	return SettingsResponse{
 		Revision: snapshot.Revision,
 		Values: SettingsValuesResponse{
@@ -371,11 +459,33 @@ func mapSettingsResponse(
 			RequestLogRetentionDays:   settings.RequestLogRetentionDays,
 			ModelsDevAutoSyncEnabled:  modelsDevAutoSyncEnabled,
 			ProxyConfig:               proxyView,
-			TurnStateWatcher:          settings.TurnStateWatcher,
+			TurnStateWatcher:          turnStateWatcher,
 		},
 		Overrides: overrides,
 		ReadOnly:  readOnly,
 	}, nil
+}
+
+func turnStateWatcherSettingsView(
+	config *state.TurnStateWatcherConfig,
+) (*state.TurnStateWatcherConfig, error) {
+	if config == nil {
+		return nil, nil
+	}
+	view := *config
+	view.HealthyLengths = append([]int(nil), config.HealthyLengths...)
+	view.DegradedLengths = append([]int(nil), config.DegradedLengths...)
+	if config.DegradeProxyURL == "" {
+		return &view, nil
+	}
+	displayURL, _, err := outboundproxy.Display(outboundproxy.Config{
+		Mode: outboundproxy.Mode(config.DegradeProxyMode), URL: config.DegradeProxyURL,
+	})
+	if err != nil {
+		return nil, err
+	}
+	view.DegradeProxyURL = displayURL
+	return &view, nil
 }
 
 func durationSeconds(value time.Duration) int64 {
