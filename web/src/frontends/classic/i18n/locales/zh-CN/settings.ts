@@ -161,12 +161,13 @@ export default {
     turnState: {
       title: 'Codex 轮次状态 Watcher',
       description:
-        '在后台自动协商 X-Codex-Turn-State：观测绑定凭据与模型的新鲜健康状态并注入，命中已知异常形态时切换备用代理并验证恢复。',
+        '在后台自动协商 X-Codex-Turn-State：首个有效请求会自动绑定实际账号与模型，观测新鲜健康状态并注入，命中已知异常形态时切换备用代理并验证恢复。',
       webConfigured: '当前由 Web 配置控制，保存后数秒内生效。',
       envFallback:
         '未在 Web 端配置。设置了 TURN_STATE_* 环境变量时按其运行；修改下方任意字段并保存即可覆盖环境变量。',
       enabled: '启用 Watcher',
-      enabledHelp: '关闭后停止后台协商，已注入的轮次状态保持不变。',
+      enabledHelp:
+        '启用后等待首个有效请求并自动绑定；关闭后停止后台协商，已注入的轮次状态保持不变。',
       group: '分组',
       groupHelp: 'Watcher 只服务这个分组下的一个凭据。',
       credential: '凭据',

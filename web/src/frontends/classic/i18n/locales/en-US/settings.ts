@@ -177,13 +177,14 @@ export default {
     turnState: {
       title: 'Codex turn-state watcher',
       description:
-        'Negotiates X-Codex-Turn-State in the background: it observes fresh healthy states for one bound credential and model, injects them, and switches to a backup proxy when a known degraded shape appears.',
+        'Negotiates X-Codex-Turn-State in the background: the first valid request automatically binds its actual account and models, then fresh healthy states are injected and known degraded shapes trigger the backup proxy.',
       webConfigured:
         'Currently managed by this web configuration; changes take effect within seconds after saving.',
       envFallback:
         'Not configured here. TURN_STATE_* environment variables apply while unset; edit any field below and save to override them.',
       enabled: 'Enable watcher',
-      enabledHelp: 'When off, background negotiation stops; already injected states are kept.',
+      enabledHelp:
+        'When enabled, the watcher waits for the first valid request and binds automatically. Turning it off keeps already injected states.',
       group: 'Group',
       groupHelp: 'The watcher serves exactly one credential in this group.',
       credential: 'Credential',

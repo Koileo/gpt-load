@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/textproto"
 	"strings"
+	"time"
 
 	"gpt-load/internal/dialect"
 	"gpt-load/internal/execution"
@@ -20,6 +21,7 @@ import (
 	"gpt-load/internal/protocol"
 	"gpt-load/internal/reasoning"
 	"gpt-load/internal/state"
+	"gpt-load/internal/turnstate"
 	"gpt-load/internal/usage"
 )
 
@@ -69,8 +71,16 @@ type ForwardInput struct {
 // ResolvedCodexTurnState 给出本次尝试真正会注入的 X-Codex-Turn-State，空串表示不
 // 注入。转发与请求日志都走这一个入口，两边不会对「注入了没有」给出不同答案。
 func (input ForwardInput) ResolvedCodexTurnState() string {
+	return input.resolvedCodexTurnStateAt(time.Now())
+}
+
+func (input ForwardInput) resolvedCodexTurnStateAt(now time.Time) string {
 	if input.CodexTurnState == "" ||
 		!matchesCodexTurnStateModels(input.CodexTurnStateModels, input.ExternalModel, input.UpstreamModelID) {
+		return ""
+	}
+	if issuedAt, ok := turnstate.FernetIssuedAt(input.CodexTurnState); ok &&
+		(now.Before(issuedAt) || now.Sub(issuedAt) > time.Hour) {
 		return ""
 	}
 	return input.CodexTurnState

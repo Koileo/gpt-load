@@ -86,6 +86,17 @@ func TestParseTurnStateWatcherConfigEnabledNormalizesProxy(t *testing.T) {
 	}
 }
 
+func TestParseTurnStateWatcherConfigEnabledDefaultsToAutomaticBinding(t *testing.T) {
+	t.Parallel()
+	config, err := ParseTurnStateWatcherConfig(map[string]any{"enabled": true})
+	if err != nil {
+		t.Fatalf("enabled automatic config error = %v", err)
+	}
+	if config.GroupID != 0 || config.CredentialID != 0 || config.PushModels != "" {
+		t.Fatalf("automatic binding defaults = %+v", config)
+	}
+}
+
 func TestParseTurnStateWatcherConfigDisabledAllowsEmptyModel(t *testing.T) {
 	t.Parallel()
 	config, err := ParseTurnStateWatcherConfig(map[string]any{"enabled": false})
@@ -103,12 +114,11 @@ func TestParseTurnStateWatcherConfigRejectsInvalidValues(t *testing.T) {
 		name   string
 		object map[string]any
 	}{
-		{"enabled requires model", map[string]any{"enabled": true}},
 		{"model with comma", map[string]any{"enabled": true, "push_models": "a,b"}},
 		{"model with wildcard", map[string]any{"enabled": true, "push_models": "gpt-*"}},
 		{"model not string", map[string]any{"enabled": true, "push_models": 42}},
-		{"zero group id", map[string]any{"enabled": true, "push_models": "m", "group_id": 0}},
-		{"zero credential id", map[string]any{"enabled": true, "push_models": "m", "credential_id": 0}},
+		{"negative group id", map[string]any{"enabled": true, "group_id": -1}},
+		{"negative credential id", map[string]any{"enabled": true, "credential_id": -1}},
 		{"zero push max age", map[string]any{"push_max_age_ms": 0}},
 		{"overflow push max age", map[string]any{"push_max_age_ms": int64(9_223_372_036_855)}},
 		{"zero poll interval", map[string]any{"poll_interval_seconds": 0}},
@@ -197,9 +207,10 @@ func TestResolveRuntimeSettingsTurnStateWatcher(t *testing.T) {
 	if resolved.TurnStateWatcher == nil || resolved.TurnStateWatcher.Enabled {
 		t.Fatalf("unexpected watcher config: %+v", resolved.TurnStateWatcher)
 	}
-	if _, err := ResolveRuntimeSettings(map[string]any{
+	resolved, err = ResolveRuntimeSettings(map[string]any{
 		SettingTurnStateWatcher: map[string]any{"enabled": true},
-	}); err == nil {
-		t.Fatal("enabled config without model must fail to resolve")
+	})
+	if err != nil || resolved.TurnStateWatcher == nil || !resolved.TurnStateWatcher.Enabled {
+		t.Fatalf("enabled automatic config must resolve: config=%+v err=%v", resolved.TurnStateWatcher, err)
 	}
 }

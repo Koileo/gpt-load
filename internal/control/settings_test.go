@@ -161,7 +161,7 @@ func TestSettingsTurnStateWatcherIsEncryptedMaskedAndPreservesProxySecret(t *tes
 	}
 }
 
-func TestSettingsTurnStateWatcherRejectsMismatchedBinding(t *testing.T) {
+func TestSettingsTurnStateWatcherAcceptsLegacyBindingWithoutUsingIt(t *testing.T) {
 	t.Parallel()
 	fixture := newServiceFixture(t)
 	groupID := createGroupWithCredentials(t, fixture, "sk-turn-state-binding")
@@ -169,7 +169,6 @@ func TestSettingsTurnStateWatcherRejectsMismatchedBinding(t *testing.T) {
 	if err := fixture.db.Where("group_id = ?", groupID).Take(&credential).Error; err != nil {
 		t.Fatal(err)
 	}
-	before := fixture.manager.Current()
 	payload, err := json.Marshal(map[string]any{
 		"enabled": true, "group_id": groupID + 1, "credential_id": credential.ID,
 		"push_models": "gpt-4o",
@@ -180,19 +179,16 @@ func TestSettingsTurnStateWatcherRejectsMismatchedBinding(t *testing.T) {
 	_, err = fixture.service.UpdateSettings(t.Context(), SettingsUpdateRequest{
 		Settings: map[string]json.RawMessage{state.SettingTurnStateWatcher: payload},
 	})
-	if !errors.Is(err, app_errors.ErrValidation) {
-		t.Fatalf("mismatched watcher binding error = %v, want validation", err)
-	}
-	if fixture.manager.Current() != before {
-		t.Fatal("mismatched watcher binding published a snapshot")
+	if err != nil {
+		t.Fatalf("legacy binding fields should not block automatic binding: %v", err)
 	}
 	var count int64
 	if err := fixture.db.Model(&models.SystemSetting{}).
 		Where("key = ?", state.SettingTurnStateWatcher).Count(&count).Error; err != nil {
 		t.Fatal(err)
 	}
-	if count != 0 {
-		t.Fatalf("mismatched watcher binding persisted %d rows", count)
+	if count != 1 {
+		t.Fatalf("watcher config persisted %d rows, want 1", count)
 	}
 }
 

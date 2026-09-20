@@ -370,6 +370,42 @@ func TestTurnStateWatcherPushesFreshHealthyState(t *testing.T) {
 	}
 }
 
+func TestTurnStateWatcherAutomaticallyBindsObservedCredentialAndModels(t *testing.T) {
+	t.Parallel()
+	fixture, watcher, groupID, credentialID := newTurnStateWatcherFixture(t)
+	watcher.settings.AutoBind = true
+	watcher.settings.GroupID = 0
+	watcher.settings.CredentialID = 0
+	watcher.settings.PushModels = ""
+	watcher.settings.VerifyModel = ""
+	watcher.settings.WatchModels = map[string]struct{}{}
+	fresh := strings.Repeat("a", 292)
+
+	watcher.observe(t.Context(), turnstate.Observation{
+		CredentialID:  credentialID,
+		ClientModel:   "client-alias",
+		UpstreamModel: "gpt-5.6-sol",
+		TurnState:     fresh,
+		StatusCode:    http.StatusOK,
+		ObservedAt:    watcher.now().Add(-time.Second),
+	})
+	watcher.flushPush(t.Context())
+
+	if watcher.settings.GroupID != groupID || watcher.settings.CredentialID != credentialID {
+		t.Fatalf("automatic credential binding = %d/%d, want %d/%d",
+			watcher.settings.GroupID, watcher.settings.CredentialID, groupID, credentialID)
+	}
+	if watcher.settings.PushModels != "client-alias" || watcher.settings.VerifyModel != "gpt-5.6-sol" {
+		t.Fatalf("automatic model binding = push %q verify %q",
+			watcher.settings.PushModels, watcher.settings.VerifyModel)
+	}
+	row := credentialTurnStateRow(t, fixture, credentialID)
+	if row.CodexTurnState != fresh || row.CodexTurnStateModels != "client-alias" {
+		t.Fatalf("automatic binding persisted state/model = %d chars / %q",
+			len(row.CodexTurnState), row.CodexTurnStateModels)
+	}
+}
+
 func TestTurnStateWatcherIgnoresUnwatchedModels(t *testing.T) {
 	t.Parallel()
 	fixture, watcher, _, credentialID := newTurnStateWatcherFixture(t)
@@ -507,6 +543,70 @@ func TestTurnStateWatcherDegradesOnUnhealthyState(t *testing.T) {
 		t.Fatal("restore must push the direct proxy config")
 	} else if proxy = decodeProxy(row.ProxyConfig); proxy.Mode != outboundproxy.ModeDirect {
 		t.Fatalf("restored proxy = %+v", proxy)
+	}
+}
+
+func TestTurnStateWatcherClearsDegradedStateWithoutProxyBeforeProbe(t *testing.T) {
+	t.Parallel()
+	fixture, watcher, _, credentialID := newTurnStateWatcherFixture(t)
+	healthy := strings.Repeat("h", 292)
+
+	watcher.observe(t.Context(), turnstate.Observation{
+		CredentialID: credentialID, ClientModel: "gpt-4o",
+		TurnState: healthy, StatusCode: http.StatusOK, ObservedAt: watcher.now(),
+	})
+	watcher.flushPush(t.Context())
+	watcher.observe(t.Context(), turnstate.Observation{
+		CredentialID: credentialID, ClientModel: "gpt-4o",
+		TurnState: strings.Repeat("d", 312), StatusCode: http.StatusOK, ObservedAt: watcher.now(),
+	})
+	row := credentialTurnStateRow(t, fixture, credentialID)
+	if row.CodexTurnState != "" {
+		t.Fatalf("degraded state without a proxy left %d injected chars", len(row.CodexTurnState))
+	}
+	if row.ProxyConfig != nil {
+		t.Fatal("degraded state without a proxy must not alter the credential proxy")
+	}
+
+	stub := &turnStateRecordingExecutor{result: execution.AttemptResult{
+		DispatchState: execution.DispatchMaybeSent, ResponseStarted: true,
+		StatusCode: http.StatusOK, UpstreamTurnState: healthy,
+	}}
+	fixture.service.executor = stub
+	watcher.verifyOnce(t.Context())
+	specs := stub.recordedSpecs()
+	if len(specs) != 1 {
+		t.Fatalf("probe count = %d, want 1", len(specs))
+	}
+	if got := specs[0].Header.Get("X-Codex-Turn-State"); got != "" {
+		t.Fatalf("verification probe injected degraded state %q", got)
+	}
+	row = credentialTurnStateRow(t, fixture, credentialID)
+	if row.CodexTurnState != healthy || row.ProxyConfig != nil {
+		t.Fatalf("healthy restore without proxy = state %d proxy %v", len(row.CodexTurnState), row.ProxyConfig)
+	}
+}
+
+func TestTurnStateWatcherClearsExpiredStoredState(t *testing.T) {
+	t.Parallel()
+	fixture, watcher, _, credentialID := newTurnStateWatcherFixture(t)
+	expired := strings.Repeat("e", 292)
+	if _, err := fixture.service.UpdateGroupCredential(
+		t.Context(), watcher.settings.GroupID, credentialID,
+		CredentialUpdateRequest{CodexTurnState: optionalField[string]{Set: true, Value: expired}},
+	); err != nil {
+		t.Fatalf("store expired fixture: %v", err)
+	}
+	stored := credentialTurnStateRow(t, fixture, credentialID)
+	watcher.now = func() time.Time {
+		return time.UnixMilli(stored.CodexTurnStateSetAtMS).Add(2 * time.Hour)
+	}
+
+	watcher.clearExpiredStoredState(t.Context())
+	row := credentialTurnStateRow(t, fixture, credentialID)
+	if row.CodexTurnState != "" || row.CodexTurnStateSetAtMS != 0 {
+		t.Fatalf("expired state was not cleared: %d chars set_at=%d",
+			len(row.CodexTurnState), row.CodexTurnStateSetAtMS)
 	}
 }
 

@@ -31,14 +31,11 @@ func TestTurnStateWatcherSettingsFromConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("turnStateWatcherSettingsFromConfig() error = %v", err)
 	}
-	if !settings.Enabled || settings.GroupID != 3 || settings.CredentialID != 7 {
-		t.Fatalf("unexpected binding: %+v", settings)
+	if !settings.Enabled || !settings.AutoBind || settings.GroupID != 0 || settings.CredentialID != 0 {
+		t.Fatalf("web settings must wait for automatic binding: %+v", settings)
 	}
-	if settings.PushModels != "GPT-5.6-Sol" || settings.VerifyModel != "gpt-5.6-sol" {
-		t.Fatalf("unexpected models: %+v", settings)
-	}
-	if len(settings.WatchModels) != 1 || !turnStateModelWatched(settings.WatchModels, "gpt-5.6-sol", "") {
-		t.Fatalf("watch models must follow the push model: %+v", settings.WatchModels)
+	if settings.PushModels != "" || settings.VerifyModel != "" || len(settings.WatchModels) != 0 {
+		t.Fatalf("web settings must not retain manual models: %+v", settings)
 	}
 	if _, ok := settings.HealthyLength[332]; !ok {
 		t.Fatalf("healthy lengths must carry the parsed defaults: %+v", settings.HealthyLength)
@@ -86,7 +83,7 @@ func TestResolveTurnStateWatcherSettingsPrefersWebConfig(t *testing.T) {
 	snapshot.Settings.TurnStateWatcher = webConfig
 
 	settings, source := resolveTurnStateWatcherSettings(snapshot, envSettings, nil)
-	if settings == nil || settings.PushModels != "web-model" || source != webConfig {
+	if settings == nil || !settings.AutoBind || settings.PushModels != "" || source != webConfig {
 		t.Fatalf("web config must win over env: %+v source=%v", settings, source)
 	}
 

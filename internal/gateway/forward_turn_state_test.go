@@ -1,6 +1,11 @@
 package gateway
 
-import "testing"
+import (
+	"encoding/base64"
+	"encoding/binary"
+	"testing"
+	"time"
+)
 
 // 模型名单是用来「缩小」注入范围的。转发路径上并非每次尝试都知道模型名——
 // ResponsesRetrieve / Cancel / InputItems / Passthrough / ListModels 这些操作不
@@ -55,6 +60,35 @@ func TestResolvedCodexTurnStateInjectsWhenTheModelIsUnknown(t *testing.T) {
 			}
 			if got := input.ResolvedCodexTurnState(); got != test.want {
 				t.Fatalf("ResolvedCodexTurnState() = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestResolvedCodexTurnStateDoesNotInjectExpiredFernetValue(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 20, 12, 0, 0, 0, time.UTC)
+	value := func(issuedAt time.Time) string {
+		raw := make([]byte, 1+8+16+10*16+32)
+		raw[0] = 0x80
+		binary.BigEndian.PutUint64(raw[1:9], uint64(issuedAt.Unix()))
+		return base64.URLEncoding.EncodeToString(raw)
+	}
+
+	for _, test := range []struct {
+		name     string
+		issuedAt time.Time
+		want     bool
+	}{
+		{name: "fresh", issuedAt: now.Add(-time.Minute), want: true},
+		{name: "expired", issuedAt: now.Add(-time.Hour - time.Second)},
+		{name: "future", issuedAt: now.Add(time.Second)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			input := ForwardInput{CodexTurnState: value(test.issuedAt)}
+			got := input.resolvedCodexTurnStateAt(now)
+			if (got != "") != test.want {
+				t.Fatalf("resolved state present = %v, want %v", got != "", test.want)
 			}
 		})
 	}

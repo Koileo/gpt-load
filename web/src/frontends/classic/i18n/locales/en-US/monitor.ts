@@ -595,8 +595,7 @@ export default {
       batchFailed: 'Bulk action failed.',
       deleteFailed: 'Unable to remove the monitor.',
       deleteTitle: 'Remove degradation monitor',
-      deleteDescription:
-        'This stops checking “{target}” and deletes its run history.',
+      deleteDescription: 'This stops checking “{target}” and deletes its run history.',
       confirmDelete: 'Remove',
       emptyFilterTitle: 'No monitors match',
       emptyFilterDescription: 'Try another state, group, or search term.',
@@ -775,8 +774,7 @@ export default {
         skipQuotaExhausted: 'Skip quota-exhausted targets',
         skipQuotaExhaustedHint: 'Checking them only burns a failed request, so they are skipped.',
         sampleCount: 'Samples',
-        sampleCountHint:
-          'Probe requests per check. The sample with the highest attribution wins.',
+        sampleCountHint: 'Probe requests per check. The sample with the highest attribution wins.',
         minProbability: 'Attribution threshold',
         minProbabilityHint:
           'Mark as degraded when the expected model scores below this, or when another model scores higher.',
@@ -806,7 +804,8 @@ export default {
           'A target can be overload-triggered only once within this window. 0 disables debouncing.',
         notifyReserved: 'Delivery is not wired up yet. These switches are only stored for now.',
         notifyTelegram: 'Telegram notifications',
-        notifyTelegramHint: 'Reserved: once wired up, pushes the events selected below to Telegram.',
+        notifyTelegramHint:
+          'Reserved: once wired up, pushes the events selected below to Telegram.',
         notifyEmail: 'Email notifications',
         notifyEmailHint: 'Reserved: once wired up, emails the events selected below.',
         notifyOnDegraded: 'Notify when marked degraded',
@@ -1401,8 +1400,11 @@ export default {
       modelMappingLabel: 'View model mapping',
       modelConsistency: {
         notObserved: 'Not observed',
-        unknownLabel: 'Upstream response model not observed',
+        matchLabel: 'Model match',
         mismatchLabel: 'Model mismatch',
+        unknownLabel: 'Not detected',
+        matchTooltip:
+          'Upstream request model: {upstream}\nUpstream response model: {reported}\nResult: Model match',
         unknownTooltip:
           'Upstream request model: {upstream}\nUpstream response model: Not observed\nNotice: Upstream response model was not observed',
         mismatchTooltip:

@@ -242,7 +242,7 @@ Windows 普通用户可改为下载 `gpt-load-windows-setup.exe`。双击并确�
 
 至少需要设置 `TURN_STATE_PUSH_MODELS`，且只能填写一个不含逗号或通配符的模型；完整配置见 [`.env.example`](./.env.example)。绑定凭据由 `TURN_STATE_PUSH_GROUP_ID` / `TURN_STATE_PUSH_CREDENTIAL_ID` 指定。为兼容旧配置，仍可读取 `TURN_STATE_CREDENTIAL_ID`、`TURN_STATE_MODELS` 和 `TURN_STATE_VERIFY_MODEL`，但它们必须分别与绑定凭据和模型完全一致，否则 watcher 拒绝启动。个人号默认使用健康/异常长度 `292/312`，Team 号使用 `332/356`，可分别通过 `TURN_STATE_HEALTHY_LENGTHS` 和 `TURN_STATE_DEGRADED_LENGTHS` 调整。配置 `TURN_STATE_DEGRADE_PROXY_URL` 后才会启用自动换代理；旧脚本的 `TURN_STATE_312_PROXY_MODE` / `TURN_STATE_312_PROXY_URL` 仍兼容。不要把带认证信息的代理 URL 提交到仓库。
 
-也可以完全不用环境变量：在管理界面的「设置 → Codex 轮次状态 Watcher」里可以直接配置并启用 watcher，保存后数秒内热生效，清除 Web 配置则回退到环境变量。同一套字段（绑定凭据、注入模型、健康/异常长度、备用代理、验证参数等）在界面与 `.env` 中语义一致；Web 配置存在时环境变量不参与计算。
+也可以完全不用环境变量：在管理界面的「设置 → Codex 轮次状态 Watcher」里可以直接配置并启用 watcher，保存后数秒内热生效，清除 Web 配置则回退到环境变量。Web 方式不再手选账号和模型，而是从首个有效观测请求自动绑定实际凭据、客户端模型和上游模型；环境变量方式为兼容现有部署，仍保留显式固定绑定。
 
 </details>
 

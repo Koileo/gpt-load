@@ -557,7 +557,8 @@ export default {
     },
     degradation: {
       title: '降智检测',
-      description: '定时用固定题目探测上游实际返回的模型，归因概率不达标就在这里标记降智；不会改动分组里的凭据标记。',
+      description:
+        '定时用固定题目探测上游实际返回的模型，归因概率不达标就在这里标记降智；不会改动分组里的凭据标记。',
       configure: '检测设置',
       add: '添加监控',
       refresh: '刷新',
@@ -724,7 +725,8 @@ export default {
         save: '保存设置',
         invalid: '有字段填写不合法，请按提示修正。',
         saveFailed: '保存设置失败。',
-        methodHint: '归因方法：{method}。推荐采样 {recommended} 次，指纹库基于 {calibrated} 次采样标定。',
+        methodHint:
+          '归因方法：{method}。推荐采样 {recommended} 次，指纹库基于 {calibrated} 次采样标定。',
         sections: {
           schedule: '排期',
           verdict: '判定',
@@ -1358,8 +1360,10 @@ export default {
       modelMappingLabel: '查看模型映射',
       modelConsistency: {
         notObserved: '未观察到',
-        unknownLabel: '未观察到上游返回模型',
+        matchLabel: '模型一致',
         mismatchLabel: '模型不一致',
+        unknownLabel: '未检测',
+        matchTooltip: '上游请求模型：{upstream}\n上游返回模型：{reported}\n检测结果：模型一致',
         unknownTooltip:
           '上游请求模型：{upstream}\n上游返回模型：未观察到\n提示：未观察到上游返回模型',
         mismatchTooltip: '上游请求模型：{upstream}\n上游返回模型：{reported}\n告警：模型不一致',

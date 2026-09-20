@@ -148,8 +148,8 @@ function projectTurnStateWatcher(value: unknown): TurnStateWatcherConfigDto | nu
   assertNoSecretLikeFields(record, [...turnStateWatcherFields])
   return {
     enabled: projectBoolean(record.enabled),
-    group_id: projectSafeInteger(record.group_id, { minimum: 1 }),
-    credential_id: projectSafeInteger(record.credential_id, { minimum: 1 }),
+    group_id: projectSafeInteger(record.group_id, { minimum: 0 }),
+    credential_id: projectSafeInteger(record.credential_id, { minimum: 0 }),
     push_models: projectString(record.push_models, { allowEmpty: true }),
     push_max_age_ms: projectSafeInteger(record.push_max_age_ms, { minimum: 1 }),
     healthy_lengths: projectArray(record.healthy_lengths, (length) =>

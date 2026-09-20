@@ -647,23 +647,23 @@ function toggleAttemptErrorMessage(sequence: number): void {
           </div>
         </dl>
         <div
-          v-if="log.model_consistency === 'unknown' || log.model_consistency === 'mismatch'"
+          v-if="log.model_consistency !== 'not_applicable'"
           class="log-model-observation"
           :class="`log-model-observation--${log.model_consistency}`"
         >
           <div class="log-model-observation__heading">
             <strong>{{ t('monitor.logs.drawer.modelObservation') }}</strong>
             <StatusBadge
-              :tone="log.model_consistency === 'mismatch' ? 'warning' : 'neutral'"
+              :tone="
+                log.model_consistency === 'match'
+                  ? 'success'
+                  : log.model_consistency === 'mismatch'
+                    ? 'danger'
+                    : 'neutral'
+              "
               size="compact"
             >
-              {{
-                t(
-                  log.model_consistency === 'mismatch'
-                    ? 'monitor.logs.modelConsistency.mismatchLabel'
-                    : 'monitor.logs.modelConsistency.unknownLabel',
-                )
-              }}
+              {{ t(`monitor.logs.modelConsistency.${log.model_consistency}Label`) }}
             </StatusBadge>
           </div>
           <dl class="log-detail__grid">
@@ -1426,7 +1426,11 @@ function toggleAttemptErrorMessage(sequence: number): void {
 }
 
 .log-model-observation--mismatch {
-  border-left-color: var(--color-warning);
+  border-left-color: var(--color-danger);
+}
+
+.log-model-observation--match {
+  border-left-color: var(--color-success);
 }
 
 .log-model-observation__heading {

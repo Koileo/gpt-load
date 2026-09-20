@@ -16,8 +16,10 @@ import (
 const SettingTurnStateWatcher = "turn_state_watcher"
 
 const (
-	DefaultTurnStateGroupID               = 1
-	DefaultTurnStateCredentialID          = 1
+	// Web 配置由运行时观测自动绑定凭据和模型；零值表示尚未绑定。固定绑定仅保留给
+	// TURN_STATE_* 环境变量兼容路径。
+	DefaultTurnStateGroupID               = 0
+	DefaultTurnStateCredentialID          = 0
 	DefaultTurnStatePushMaxAgeMS          = int64(time.Hour / time.Millisecond)
 	DefaultTurnStatePollIntervalSeconds   = int64(15)
 	DefaultTurnStateVerifyIntervalSeconds = int64(60)
@@ -27,8 +29,9 @@ const (
 	maxTurnStateNumber = 1<<53 - 1
 )
 
-// TurnStateWatcherConfig 是 watcher 的完整配置，字段与 .env 中的 TURN_STATE_*
-// 变量一一对应（verify_model 不在此列：它必须与 push 模型一致，没有独立价值）。
+// TurnStateWatcherConfig 是 watcher 的 Web 配置。GroupID、CredentialID 和
+// PushModels 只用于兼容读取旧版本保存的数据；Web watcher 运行时会从首个有效观测
+// 自动绑定实际凭据、客户端模型与上游验证模型。
 type TurnStateWatcherConfig struct {
 	Enabled               bool   `json:"enabled"`
 	GroupID               uint   `json:"group_id"`
@@ -107,19 +110,19 @@ func ParseTurnStateWatcherConfig(value any) (*TurnStateWatcherConfig, error) {
 		}
 	}
 	if config.PushModels, err = parseTurnStateModel(
-		pathAt("push_models"), object["push_models"], config.Enabled,
+		pathAt("push_models"), object["push_models"],
 	); err != nil {
 		return nil, err
 	}
 	if _, exists := object["group_id"]; exists {
-		parsed, err := turnStatePositiveUint(pathAt("group_id"), object["group_id"])
+		parsed, err := turnStateNonNegativeUint(pathAt("group_id"), object["group_id"])
 		if err != nil {
 			return nil, err
 		}
 		config.GroupID = parsed
 	}
 	if _, exists := object["credential_id"]; exists {
-		parsed, err := turnStatePositiveUint(pathAt("credential_id"), object["credential_id"])
+		parsed, err := turnStateNonNegativeUint(pathAt("credential_id"), object["credential_id"])
 		if err != nil {
 			return nil, err
 		}
@@ -207,13 +210,9 @@ func pathAt(field string) string {
 	return SettingTurnStateWatcher + "." + field
 }
 
-// parseTurnStateModel 要求恰好一个不含逗号与通配符的模型名；关闭状态下允许
-// 留空，这样 UI 可以先保存一份停用配置再补齐模型。
-func parseTurnStateModel(path string, value any, enabled bool) (string, error) {
+// parseTurnStateModel 兼容旧 Web 配置中的固定模型字段。新配置留空，由后台自动绑定。
+func parseTurnStateModel(path string, value any) (string, error) {
 	if value == nil {
-		if enabled {
-			return "", fmt.Errorf("%s is required when enabled", path)
-		}
 		return "", nil
 	}
 	text, ok := value.(string)
@@ -222,15 +221,20 @@ func parseTurnStateModel(path string, value any, enabled bool) (string, error) {
 	}
 	text = strings.TrimSpace(text)
 	if text == "" {
-		if enabled {
-			return "", fmt.Errorf("%s is required when enabled", path)
-		}
 		return "", nil
 	}
 	if strings.ContainsAny(text, ",*") {
 		return "", fmt.Errorf("%s must name exactly one model without wildcards", path)
 	}
 	return text, nil
+}
+
+func turnStateNonNegativeUint(path string, value any) (uint, error) {
+	parsed, err := wholeNumberInRange(path, value, 0, math.MaxInt32)
+	if err != nil {
+		return 0, err
+	}
+	return uint(parsed), nil
 }
 
 func turnStatePositiveUint(path string, value any) (uint, error) {

@@ -242,7 +242,7 @@ Windows の一般ユーザーは代わりに `gpt-load-windows-setup.exe` を利
 
 `TURN_STATE_PUSH_MODELS` は必須で、カンマやワイルドカードを含まない 1 つのモデルだけを指定できます。完全な設定は [`.env.example`](./.env.example) を参照してください。バインド対象の認証情報は `TURN_STATE_PUSH_GROUP_ID` / `TURN_STATE_PUSH_CREDENTIAL_ID` で指定します。旧設定との互換性のため `TURN_STATE_CREDENTIAL_ID`、`TURN_STATE_MODELS`、`TURN_STATE_VERIFY_MODEL` も読み取りますが、それぞれバインド対象の認証情報とモデルに一致しない場合、watcher は起動しません。個人アカウントの正常/異常長は `292/312`、Team は `332/356` が既定で、`TURN_STATE_HEALTHY_LENGTHS` と `TURN_STATE_DEGRADED_LENGTHS` で変更できます。`TURN_STATE_DEGRADE_PROXY_URL` を設定した場合のみプロキシ切り替えが有効になります。旧スクリプト名 `TURN_STATE_312_PROXY_MODE` / `TURN_STATE_312_PROXY_URL` も引き続き利用できます。認証情報を含むプロキシ URL をリポジトリへコミットしないでください。
 
-環境変数は必須ではありません。管理画面の「設定 → Codex ターンステートウォッチャー」から同じ watcher を設定・有効化できます。保存した Web 設定は数秒で反映され、環境変数より優先されます。Web 設定を消去すると環境変数に戻ります。バインド対象、注入モデル、正常/異常の長さ、バックアッププロキシ、検証パラメータなど、各項目の意味は `.env` と同一です。
+環境変数は必須ではありません。管理画面の「設定 → Codex ターンステートウォッチャー」から同じ watcher を設定・有効化できます。保存した Web 設定は数秒で反映され、環境変数より優先されます。Web 設定を消去すると環境変数に戻ります。Web 設定ではアカウントとモデルを手動選択せず、最初の有効な観測リクエストから実際の認証情報、クライアントモデル、上流モデルを自動的にバインドします。既存環境との互換性のため、環境変数設定では明示的な固定バインドを維持します。
 
 </details>
 

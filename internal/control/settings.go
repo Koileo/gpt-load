@@ -183,21 +183,6 @@ func (s *Service) applySettingUpdates(
 	updates []persistedSettingUpdate,
 ) error {
 	for _, update := range updates {
-		config := update.turnStateWatcher
-		if config == nil || !config.Enabled {
-			continue
-		}
-		var count int64
-		if err := tx.Model(&models.Credential{}).
-			Where("id = ? AND group_id = ?", config.CredentialID, config.GroupID).
-			Count(&count).Error; err != nil {
-			return app_errors.ParseDBError(err)
-		}
-		if count != 1 {
-			return app_errors.ErrValidation
-		}
-	}
-	for _, update := range updates {
 		if update.value == nil {
 			if err := tx.Where(&models.SystemSetting{Key: update.key}).
 				Delete(&models.SystemSetting{}).Error; err != nil {

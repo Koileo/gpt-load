@@ -17,9 +17,11 @@ import (
 
 	"gpt-load/internal/execution"
 	"gpt-load/internal/outboundproxy"
+	platformheader "gpt-load/internal/platform/httpheader"
 	"gpt-load/internal/platform/utils"
 	"gpt-load/internal/protocol"
 	"gpt-load/internal/state"
+	"gpt-load/internal/storage/models"
 	"gpt-load/internal/turnstate"
 )
 
@@ -31,6 +33,7 @@ import (
 
 type turnStateWatcherSettings struct {
 	Enabled        bool
+	AutoBind       bool
 	WatchModels    map[string]struct{}
 	PushModels     string
 	GroupID        uint
@@ -476,19 +479,22 @@ func (s *Service) runTurnStateWatcherOnce(ctx context.Context, settings turnStat
 	}
 	restore := turnstate.Subscribe(watcher.forward)
 	defer restore()
-	turnStateLog(logrus.InfoLevel, logrus.Fields{
-		"event":         "control.turn_state_watcher_started",
-		"group_id":      settings.GroupID,
-		"credential_id": settings.CredentialID,
-	}, fmt.Sprintf(
-		"Turn state watcher started (model %s · credential %d · healthy lengths %s · degraded lengths %s · poll %s)",
-		settings.PushModels,
-		settings.CredentialID,
-		joinHealthyLengths(settings),
-		joinTurnStateLengths(settings.DegradedLength),
-		settings.PollInterval,
-	))
-	watcher.restoreState(ctx)
+	fields := logrus.Fields{"event": "control.turn_state_watcher_started"}
+	message := fmt.Sprintf(
+		"Turn state watcher started (automatic binding · healthy lengths %s · degraded lengths %s · poll %s)",
+		joinHealthyLengths(settings), joinTurnStateLengths(settings.DegradedLength), settings.PollInterval,
+	)
+	if !settings.AutoBind {
+		fields["group_id"] = settings.GroupID
+		fields["credential_id"] = settings.CredentialID
+		message = fmt.Sprintf(
+			"Turn state watcher started (model %s · credential %d · healthy lengths %s · degraded lengths %s · poll %s)",
+			settings.PushModels, settings.CredentialID, joinHealthyLengths(settings),
+			joinTurnStateLengths(settings.DegradedLength), settings.PollInterval,
+		)
+		watcher.restoreState(ctx)
+	}
+	turnStateLog(logrus.InfoLevel, fields, message)
 	ticker := time.NewTicker(settings.PollInterval)
 	defer ticker.Stop()
 	for {
@@ -513,9 +519,7 @@ func turnStateWatcherSettingsFromConfig(
 ) (turnStateWatcherSettings, error) {
 	settings := turnStateWatcherSettings{
 		Enabled:      config.Enabled,
-		GroupID:      config.GroupID,
-		CredentialID: config.CredentialID,
-		PushModels:   config.PushModels,
+		AutoBind:     true,
 		PushMaxAge:   time.Duration(config.PushMaxAgeMS) * time.Millisecond,
 		PollInterval: time.Duration(config.PollIntervalSeconds) * time.Second,
 		VerifyGap:    time.Duration(config.VerifyIntervalSeconds) * time.Second,
@@ -524,14 +528,14 @@ func turnStateWatcherSettingsFromConfig(
 		Verbose:      config.Verbose,
 		DirectProxy:  outboundproxy.Config{Mode: outboundproxy.ModeDirect},
 	}
-	if !config.Enabled || config.PushModels == "" {
+	if !config.Enabled {
 		return settings, fmt.Errorf("turn state watcher config is not enabled")
 	}
 	if settings.PushMaxAge <= 0 || settings.PollInterval <= 0 ||
 		settings.VerifyGap <= 0 || settings.VerifyTime <= 0 {
 		return settings, fmt.Errorf("turn state watcher duration is out of range")
 	}
-	settings.WatchModels = map[string]struct{}{strings.ToLower(config.PushModels): {}}
+	settings.WatchModels = map[string]struct{}{}
 	settings.HealthyLength = make(map[int]struct{}, len(config.HealthyLengths))
 	for _, length := range config.HealthyLengths {
 		settings.HealthyLength[length] = struct{}{}
@@ -540,7 +544,6 @@ func turnStateWatcherSettingsFromConfig(
 	for _, length := range config.DegradedLengths {
 		settings.DegradedLength[length] = struct{}{}
 	}
-	settings.VerifyModel = strings.ToLower(config.PushModels)
 	if config.DegradeProxyURL != "" {
 		mode := outboundproxy.Mode(config.DegradeProxyMode)
 		if mode == "" {
@@ -611,6 +614,12 @@ func (watcher *turnStateWatcher) forward(observation turnstate.Observation) {
 
 // observe 处理一条观测：健康值进入推送候选，非健康值触发降级。
 func (watcher *turnStateWatcher) observe(ctx context.Context, observation turnstate.Observation) {
+	if watcher.settings.AutoBind && watcher.settings.CredentialID == 0 {
+		if !watcher.bindObservation(ctx, observation) {
+			return
+		}
+		watcher.restoreState(ctx)
+	}
 	if observation.CredentialID != watcher.settings.CredentialID ||
 		observation.StatusCode < http.StatusOK || observation.StatusCode >= http.StatusMultipleChoices {
 		return
@@ -643,14 +652,73 @@ func (watcher *turnStateWatcher) observe(ctx context.Context, observation turnst
 	}
 	// 未知长度不自动改凭据或代理。上游格式变化时宁可只记日志，也不能把所有
 	// 正常流量误判成降级；已知异常形态可由 TURN_STATE_DEGRADED_LENGTHS 扩展。
-	if !degraded || !watcher.settings.DegradeReady {
+	if !degraded {
 		return
 	}
 	watcher.enterDegraded(ctx)
 }
 
+// bindObservation 把 Web watcher 锁定到首个可信的实际请求。绑定来源完全来自执行层
+// 观测，避免管理员手填的凭据、客户端模型和实际上游模型互相错配。
+func (watcher *turnStateWatcher) bindObservation(
+	ctx context.Context,
+	observation turnstate.Observation,
+) bool {
+	if observation.CredentialID == 0 ||
+		observation.StatusCode < http.StatusOK || observation.StatusCode >= http.StatusMultipleChoices {
+		return false
+	}
+	if _, healthy := watcher.settings.HealthyLength[len(observation.TurnState)]; !healthy {
+		if _, degraded := watcher.settings.DegradedLength[len(observation.TurnState)]; !degraded {
+			return false
+		}
+	}
+	clientModel := strings.TrimSpace(observation.ClientModel)
+	upstreamModel := strings.TrimSpace(observation.UpstreamModel)
+	if clientModel == "" {
+		clientModel = upstreamModel
+	}
+	if upstreamModel == "" {
+		upstreamModel = clientModel
+	}
+	if clientModel == "" || strings.ContainsAny(clientModel, ",*") ||
+		strings.ContainsAny(upstreamModel, ",*") {
+		return false
+	}
+	var credential models.Credential
+	if err := watcher.service.db.WithContext(ctx).
+		Select("id", "group_id").
+		Where("id = ?", observation.CredentialID).
+		Take(&credential).Error; err != nil || credential.GroupID == 0 {
+		if ctx.Err() == nil {
+			turnStateLog(logrus.WarnLevel, logrus.Fields{
+				"event":         "control.turn_state_watcher_bind_failed",
+				"credential_id": observation.CredentialID,
+			}, "Turn state watcher could not resolve the observed credential")
+		}
+		return false
+	}
+	watcher.settings.GroupID = credential.GroupID
+	watcher.settings.CredentialID = credential.ID
+	watcher.settings.PushModels = clientModel
+	watcher.settings.VerifyModel = upstreamModel
+	watcher.settings.WatchModels = map[string]struct{}{
+		strings.ToLower(clientModel):   {},
+		strings.ToLower(upstreamModel): {},
+	}
+	turnStateLog(logrus.InfoLevel, logrus.Fields{
+		"event":          "control.turn_state_watcher_bound",
+		"group_id":       credential.GroupID,
+		"credential_id":  credential.ID,
+		"client_model":   clientModel,
+		"upstream_model": upstreamModel,
+	}, "Turn state watcher automatically bound to the observed credential and models")
+	return true
+}
+
 // sweep 是每个轮询节拍的一次巡检：把待写的注入值推下去；处于降级时按节奏验证。
 func (watcher *turnStateWatcher) sweep(ctx context.Context) {
+	watcher.clearExpiredStoredState(ctx)
 	watcher.flushPush(ctx)
 	watcher.mu.Lock()
 	degraded := watcher.degraded
@@ -658,7 +726,7 @@ func (watcher *turnStateWatcher) sweep(ctx context.Context) {
 	verifyPaused := watcher.verifyPaused
 	nextVerifyAt := watcher.nextVerifyAt
 	watcher.mu.Unlock()
-	if !watcher.settings.DegradeReady || !degraded || verifyPaused {
+	if !degraded || verifyPaused {
 		return
 	}
 	if !proxySet {
@@ -744,7 +812,7 @@ func (watcher *turnStateWatcher) enterDegraded(ctx context.Context) {
 			"event":         "control.turn_state_degraded",
 			"group_id":      watcher.settings.GroupID,
 			"credential_id": watcher.settings.CredentialID,
-		}, "non-healthy turn state observed; clearing injection and switching proxy")
+		}, "non-healthy turn state observed; clearing injection before verification")
 	}
 	stored, storedOK := watcher.storedTurnState(ctx)
 	if !proxyConfirmed || !storedOK || stored != "" {
@@ -752,12 +820,15 @@ func (watcher *turnStateWatcher) enterDegraded(ctx context.Context) {
 	}
 }
 
-// ensureDegraded 用一次凭据更新同时清掉旧 state 并切到备用代理。这样任何一步失败
-// 都不会留下“备用代理已生效但旧 state 仍在注入”的半完成状态。
+// ensureDegraded 清掉旧 state，确保后续获取健康状态的验证请求绝不注入异常值；配置了
+// 备用代理时在同一次凭据更新里切换，避免留下半完成状态。
 func (watcher *turnStateWatcher) ensureDegraded(ctx context.Context) {
-	proxy := watcher.settings.DegradeProxy
 	empty := ""
-	if err := watcher.updateCredential(ctx, &empty, &proxy); err != nil {
+	var proxy *outboundproxy.Config
+	if watcher.settings.DegradeReady {
+		proxy = &watcher.settings.DegradeProxy
+	}
+	if err := watcher.updateCredential(ctx, &empty, proxy); err != nil {
 		turnStateLog(logrus.WarnLevel, logrus.Fields{
 			"event":         "control.turn_state_proxy_push_failed",
 			"credential_id": watcher.settings.CredentialID,
@@ -767,12 +838,17 @@ func (watcher *turnStateWatcher) ensureDegraded(ctx context.Context) {
 	watcher.mu.Lock()
 	watcher.degradeProxySet = true
 	watcher.mu.Unlock()
-	turnStateLog(logrus.InfoLevel, logrus.Fields{
+	fields := logrus.Fields{
 		"event":         "control.turn_state_proxy_switched",
 		"group_id":      watcher.settings.GroupID,
 		"credential_id": watcher.settings.CredentialID,
-		"mode":          string(proxy.Mode),
-	}, fmt.Sprintf("credential %d turn state cleared and proxy switched to %s", watcher.settings.CredentialID, proxy.Mode))
+	}
+	message := fmt.Sprintf("credential %d turn state cleared before verification", watcher.settings.CredentialID)
+	if proxy != nil {
+		fields["mode"] = string(proxy.Mode)
+		message = fmt.Sprintf("credential %d turn state cleared and proxy switched to %s", watcher.settings.CredentialID, proxy.Mode)
+	}
+	turnStateLog(logrus.InfoLevel, fields, message)
 }
 
 // verifyOnce 发一次最小验证请求，健康则把 state 写回并把代理切回直连。
@@ -791,7 +867,7 @@ func (watcher *turnStateWatcher) verifyOnce(ctx context.Context) {
 		return
 	}
 	// 代理不在备用配置上，说明上次写入没成功或者被人手动改过，重新推一遍。
-	if !watcher.degradeProxyActive(target.credential.proxy) {
+	if watcher.settings.DegradeReady && !watcher.degradeProxyActive(target.credential.proxy) {
 		watcher.mu.Lock()
 		watcher.degradeProxySet = false
 		watcher.mu.Unlock()
@@ -826,8 +902,11 @@ func (watcher *turnStateWatcher) verifyOnce(ctx context.Context) {
 	}
 
 	// 恢复也只做一次原子更新；不允许 state 写入失败后仍把代理切回直连。
-	direct := watcher.settings.DirectProxy
-	if err := watcher.updateCredential(ctx, &value, &direct); err != nil {
+	var direct *outboundproxy.Config
+	if watcher.settings.DegradeReady {
+		direct = &watcher.settings.DirectProxy
+	}
+	if err := watcher.updateCredential(ctx, &value, direct); err != nil {
 		turnStateLog(logrus.WarnLevel, logrus.Fields{
 			"event":         "control.turn_state_restore_failed",
 			"credential_id": watcher.settings.CredentialID,
@@ -848,7 +927,48 @@ func (watcher *turnStateWatcher) verifyOnce(ctx context.Context) {
 		"group_id":      watcher.settings.GroupID,
 		"credential_id": watcher.settings.CredentialID,
 		"attempts":      attempt,
-	}, fmt.Sprintf("healthy turn state restored after %d attempt(s) — proxy back to %s", attempt, direct.Mode))
+	}, fmt.Sprintf("healthy turn state restored after %d attempt(s)", attempt))
+}
+
+// clearExpiredStoredState 主动清理已超过时效的注入值。Fernet 值优先采用自身签发
+// 时间；非 Fernet 的兼容值只在数据库有可信写入时间时清理。
+func (watcher *turnStateWatcher) clearExpiredStoredState(ctx context.Context) {
+	if watcher.settings.CredentialID == 0 || watcher.settings.PushMaxAge <= 0 {
+		return
+	}
+	var credential models.Credential
+	if err := watcher.service.db.WithContext(ctx).
+		Select("id", "codex_turn_state", "codex_turn_state_set_at_ms").
+		Where("id = ? AND group_id = ?", watcher.settings.CredentialID, watcher.settings.GroupID).
+		Take(&credential).Error; err != nil || credential.CodexTurnState == "" {
+		return
+	}
+	observedAt := time.Time{}
+	if credential.CodexTurnStateSetAtMS > 0 {
+		observedAt = time.UnixMilli(credential.CodexTurnStateSetAtMS)
+	} else if _, ok := turnstate.FernetIssuedAt(credential.CodexTurnState); !ok {
+		return
+	}
+	if turnStateValueFresh(
+		credential.CodexTurnState, observedAt, watcher.now(), watcher.settings.PushMaxAge,
+	) {
+		return
+	}
+	empty := ""
+	if err := watcher.updateCredential(ctx, &empty, nil); err != nil {
+		if ctx.Err() == nil {
+			turnStateLog(logrus.WarnLevel, logrus.Fields{
+				"event":         "control.turn_state_expired_clear_failed",
+				"credential_id": watcher.settings.CredentialID,
+			}, "Expired turn state could not be cleared: "+err.Error())
+		}
+		return
+	}
+	turnStateLog(logrus.InfoLevel, logrus.Fields{
+		"event":         "control.turn_state_expired_cleared",
+		"group_id":      watcher.settings.GroupID,
+		"credential_id": watcher.settings.CredentialID,
+	}, "Expired turn state was cleared automatically")
 }
 
 func (watcher *turnStateWatcher) degradeProxyActive(effective outboundproxy.Effective) bool {
@@ -919,6 +1039,10 @@ func (watcher *turnStateWatcher) probe(
 	if err != nil {
 		return execution.AttemptResult{}, err
 	}
+	header := applyControlHeaderRules(target.headerRules, target.credential.apiKey)
+	// 验证请求的目的就是从上游取得一个全新的健康状态，任何来源的旧 turn state
+	// 都必须移除，包括管理员可能配置在分组头规则里的值。
+	header.Del(platformheader.CodexTurnStateName)
 	spec := execution.NewAttemptSpec(execution.AttemptSpec{
 		RequestID: requestID, AttemptID: attemptID, Sequence: 1,
 		ChannelID:      string(target.channelID),
@@ -927,7 +1051,7 @@ func (watcher *turnStateWatcher) probe(
 		Operation:      execution.OperationResponsesCreate,
 		ClientModel:    model, UpstreamModel: model,
 		Method: http.MethodPost, Path: "/v1/responses",
-		Header:            applyControlHeaderRules(target.headerRules, target.credential.apiKey),
+		Header:            header,
 		Body:              body,
 		ConfiguredHeaders: target.headerRules.ConfiguredNames(),
 		TargetConfig:      target.resolvedTarget.TargetConfig,

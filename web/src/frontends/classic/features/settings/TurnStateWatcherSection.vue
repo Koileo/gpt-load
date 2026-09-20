@@ -1,14 +1,9 @@
 <script setup lang="ts">
-import { useQuery } from '@tanstack/vue-query'
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 
-import { useApiClient } from '@shared/http/client-context'
 import type { TurnStateWatcherConfigDto } from '@/api/control/types'
-import { credentialCollectionQueryOptions } from '@/app/resources/credentials'
-import { groupOptionsQueryOptions } from '@/app/resources/groups'
 import AppButton from '@/components/ui/AppButton.vue'
-import AppSelect from '@/components/ui/AppSelect.vue'
 import AppSwitch from '@/components/ui/AppSwitch.vue'
 import DegradationNumberField from '@/features/monitor/DegradationNumberField.vue'
 import FormField from '@/components/ui/FormField.vue'
@@ -26,7 +21,6 @@ const emit = defineEmits<{
   'update:valid': [valid: boolean]
 }>()
 const { t } = useI18n()
-const client = useApiClient()
 
 const defaultLengths = { healthy: '292, 332', degraded: '312, 356' } as const
 const maxDurationMilliseconds = 9_223_372_036_854
@@ -34,9 +28,6 @@ const maxDurationSeconds = 9_223_372_036
 
 interface TurnStateFormState {
   enabled: boolean
-  groupId: string
-  credentialId: string
-  pushModels: string
   healthyLengths: string
   degradedLengths: string
   pushMaxAgeMs: string
@@ -55,9 +46,6 @@ function emptyNumber(value: number): string {
 function buildFormState(config: TurnStateWatcherConfigDto): TurnStateFormState {
   return {
     enabled: config.enabled,
-    groupId: String(config.group_id),
-    credentialId: String(config.credential_id),
-    pushModels: config.push_models,
     healthyLengths:
       config.healthy_lengths.length > 0
         ? config.healthy_lengths.join(', ')
@@ -79,9 +67,6 @@ function buildFormState(config: TurnStateWatcherConfigDto): TurnStateFormState {
 // 未配置时的展示基线：与后端 ParseTurnStateWatcherConfig 的默认值一致。
 const defaultForm = (): TurnStateFormState => ({
   enabled: false,
-  groupId: '1',
-  credentialId: '1',
-  pushModels: '',
   healthyLengths: defaultLengths.healthy,
   degradedLengths: defaultLengths.degraded,
   pushMaxAgeMs: '3600000',
@@ -101,30 +86,8 @@ watch(
   },
 )
 
-const groupOptionsQuery = useQuery(groupOptionsQueryOptions(client))
-const groupSelectOptions = computed(() =>
-  (groupOptionsQuery.data.value ?? []).map((group) => ({
-    value: String(group.id),
-    label: group.name,
-  })),
-)
-
-const selectedGroupId = computed(() => Number(form.value.groupId) || 0)
-const credentialFilters = { page: 1, page_size: 100 } as const
-const credentialQuery = useQuery({
-  ...credentialCollectionQueryOptions(client, selectedGroupId, () => credentialFilters),
-  enabled: () => selectedGroupId.value >= 1,
-})
-const credentialSelectOptions = computed(() =>
-  (credentialQuery.data.value?.items ?? []).map((item) => ({
-    value: String(item.credential_id),
-    label: `#${item.credential_id} · ${item.mask}`,
-  })),
-)
-
 function updateField<K extends keyof TurnStateFormState>(key: K, value: TurnStateFormState[K]) {
   form.value[key] = value
-  if (key === 'groupId') form.value.credentialId = ''
   emitChange()
 }
 
@@ -139,9 +102,9 @@ function parseLengths(text: string): number[] {
 function emitChange() {
   emit('change', {
     enabled: form.value.enabled,
-    group_id: Number(form.value.groupId),
-    credential_id: Number(form.value.credentialId),
-    push_models: form.value.pushModels.trim(),
+    group_id: 0,
+    credential_id: 0,
+    push_models: '',
     push_max_age_ms: Number(form.value.pushMaxAgeMs),
     healthy_lengths: parseLengths(form.value.healthyLengths),
     degraded_lengths: parseLengths(form.value.degradedLengths),
@@ -155,13 +118,6 @@ function emitChange() {
   })
 }
 
-const modelError = computed(() => {
-  if (!form.value.enabled) return undefined
-  const model = form.value.pushModels.trim()
-  if (!model) return t('settings.turnState.errors.modelRequired')
-  if (/[,*]/.test(model)) return t('settings.turnState.errors.modelSingle')
-  return undefined
-})
 const healthyLengthError = computed(() =>
   lengthsError(form.value.healthyLengths, 'settings.turnState.errors.healthyLengths'),
 )
@@ -214,30 +170,14 @@ const proxyError = computed(() => {
   }
   return undefined
 })
-const bindingError = computed(() => {
-  if (selectedGroupId.value < 1 || Number(form.value.credentialId) < 1) {
-    return t('settings.turnState.errors.bindingRequired')
-  }
-  if (!form.value.enabled) return undefined
-  if (
-    credentialQuery.isPending.value ||
-    !credentialSelectOptions.value.some((option) => option.value === form.value.credentialId)
-  ) {
-    return t('settings.turnState.errors.bindingRequired')
-  }
-  return undefined
-})
-
 const isValid = computed(
   () =>
-    !modelError.value &&
     !healthyLengthError.value &&
     !degradedLengthError.value &&
     !overlapError.value &&
     !positiveError.value &&
     !verifyMaxError.value &&
-    !proxyError.value &&
-    !bindingError.value,
+    !proxyError.value,
 )
 watch(isValid, (valid) => emit('update:valid', valid), { immediate: true })
 </script>
@@ -266,66 +206,6 @@ watch(isValid, (valid) => emit('update:valid', valid), { immediate: true })
           <span>{{ t('settings.turnState.enabledHelp') }}</span>
         </div>
       </div>
-
-      <FormField
-        id="settings-turn-state-group"
-        :label="t('settings.turnState.group')"
-        :description="t('settings.turnState.groupHelp')"
-        :error="bindingError"
-        size="compact"
-      >
-        <template #default="{ describedBy }">
-          <AppSelect
-            id="settings-turn-state-group"
-            :model-value="form.groupId"
-            :label="t('settings.turnState.group')"
-            :options="groupSelectOptions"
-            :disabled="disabled"
-            :aria-describedby="describedBy"
-            @update:model-value="updateField('groupId', $event)"
-          />
-        </template>
-      </FormField>
-
-      <FormField
-        id="settings-turn-state-credential"
-        :label="t('settings.turnState.credential')"
-        :description="t('settings.turnState.credentialHelp')"
-        size="compact"
-      >
-        <template #default="{ describedBy }">
-          <AppSelect
-            id="settings-turn-state-credential"
-            :model-value="form.credentialId"
-            :label="t('settings.turnState.credential')"
-            :options="credentialSelectOptions"
-            :disabled="disabled || selectedGroupId < 1"
-            :aria-describedby="describedBy"
-            @update:model-value="updateField('credentialId', $event)"
-          />
-        </template>
-      </FormField>
-
-      <FormField
-        id="settings-turn-state-model"
-        :label="t('settings.turnState.model')"
-        :description="t('settings.turnState.modelHelp')"
-        :error="modelError"
-        size="compact"
-      >
-        <template #default="{ describedBy, invalid }">
-          <input
-            id="settings-turn-state-model"
-            :value="form.pushModels"
-            autocomplete="off"
-            :spellcheck="false"
-            :disabled="disabled"
-            :aria-describedby="describedBy"
-            :aria-invalid="invalid || undefined"
-            @input="updateField('pushModels', ($event.target as HTMLInputElement).value)"
-          />
-        </template>
-      </FormField>
 
       <FormField
         id="settings-turn-state-healthy"
